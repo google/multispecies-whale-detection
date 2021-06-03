@@ -1,0 +1,9 @@
+# Python intermediate outputs
+__pycache__/
+*.py[cod]
+*.egg-info
+
+# vim temporary files
+*~
+*.swp
+*.swo
