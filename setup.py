@@ -64,6 +64,7 @@ setuptools.setup(
         'apache_beam[gcp]',
         'dateutil',
         'intervaltree',
+        'mutagen',
         'numpy',
         'python-snappy',
         'resampy',
