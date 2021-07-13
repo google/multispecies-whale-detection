@@ -12,32 +12,41 @@ def fixture_path(basename: str) -> str:
 
 def fixture_header():
   return xwav.Header(
-      wav_version_number=1,
-      firmware_version_number='V2.01A',
-      instrument_id='DL41',
-      site_name='',
-      experiment_name='Kauai01',
-      disk_sequence_number=11,
-      disk_serial_number='12345678',
-      longitude=-159.53383,
-      latitude=21.57224,
-      depth=720,
-      subchunks=[
-          xwav.Subchunk(
-              time=datetime.datetime(2010, 2, 28, 2, 21, 15),
-              byte_loc=34444,
-              byte_length=1500000,
-              write_length=3000,
-              sample_rate=10000,
-              gain=1),
-          xwav.Subchunk(
-              time=datetime.datetime(2010, 2, 28, 2, 22, 30),
-              byte_loc=1534444,
-              byte_length=1500000,
-              write_length=3000,
-              sample_rate=10000,
-              gain=1)
-      ])
+      fmt_chunk=xwav.FmtChunk(
+          num_channels=1,
+          sample_rate=10000,
+          bytes_per_second=20000,
+          block_align=2,
+          bits_per_sample=16,
+      ),
+      harp_chunk=xwav.HarpChunk(
+          wav_version_number=1,
+          firmware_version_number='V2.01A',
+          instrument_id='DL41',
+          site_name='',
+          experiment_name='Kauai01',
+          disk_sequence_number=11,
+          disk_serial_number='12345678',
+          longitude=-159.53383,
+          latitude=21.57224,
+          depth=720,
+          subchunks=[
+              xwav.Subchunk(
+                  time=datetime.datetime(2010, 2, 28, 2, 21, 15),
+                  byte_loc=34444,
+                  byte_length=1500000,
+                  write_length=3000,
+                  sample_rate=10000,
+                  gain=1),
+              xwav.Subchunk(
+                  time=datetime.datetime(2010, 2, 28, 2, 22, 30),
+                  byte_loc=1534444,
+                  byte_length=1500000,
+                  write_length=3000,
+                  sample_rate=10000,
+                  gain=1)
+          ]),
+  )
 
 
 class TestXwav(unittest.TestCase):

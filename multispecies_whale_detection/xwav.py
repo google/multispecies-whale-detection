@@ -32,12 +32,24 @@ import chunk
 import datetime
 import io
 import struct
-from typing import BinaryIO, Optional, Sequence
+from typing import BinaryIO, Optional, Sequence, TypeVar
+import wave
 
 from dataclasses import dataclass
 from mutagen import flac
 
+FMT_CHUNK_ID = b'fmt '  # (trailing space intentional)
 HARP_CHUNK_ID = b'harp'
+
+
+@dataclass(frozen=True)
+class FmtChunk:
+  """Metadata from the standard WAV "fmt " chunk."""
+  num_channels: int
+  sample_rate: int
+  bytes_per_second: int
+  block_align: int
+  bits_per_sample: int
 
 
 @dataclass(frozen=True)
@@ -52,8 +64,8 @@ class Subchunk:
 
 
 @dataclass(frozen=True)
-class Header:
-  """File-level XWAV metadata."""
+class HarpChunk:
+  """Metadata from the XWAV-specific "harp" chunk."""
   wav_version_number: int
   firmware_version_number: str
   instrument_id: str
@@ -68,12 +80,54 @@ class Header:
   subchunks: Sequence[Subchunk]
 
 
+# to annotate a factory method
+HeaderType = TypeVar('HeaderType', bound='Header')
+
+
+@dataclass(frozen=True)
+class Header:
+  """Full parsed XWAV header, including standard WAV headers."""
+  fmt_chunk: FmtChunk
+  harp_chunk: HarpChunk
+
+  @classmethod
+  def from_chunks(cls, fmt_chunk: Optional[FmtChunk],
+                  harp_chunk: Optional[HarpChunk]) -> Optional[HeaderType]:
+    """Constructs a header only if both arguments are not None."""
+    if fmt_chunk is None or harp_chunk is None:
+      return None
+    return cls(fmt_chunk, harp_chunk)
+
+
 def _clean_header_str(value: bytes) -> str:
   """Null-terminates, strips, and removes trailing underscores."""
   return value.split(b'\x00')[0].decode().strip().rstrip('_')
 
 
-def header_from_harp_chunk(reader: BinaryIO) -> Header:
+def read_fmt_chunk(reader: BinaryIO) -> FmtChunk:
+  """Parses a WAV "fmt " chunk.
+
+  Args:
+    reader: file-like object that reads the contents of a "fmt " chunk. (It
+      should be positioned at the start of the content, that is after the size,
+      of the "fmt " chunk.)
+
+  Returns:
+    FmtChunk parsed from the reader.
+  """
+  (format_code, num_channels, sample_rate, bytes_per_second, block_align,
+   bits_per_sample) = struct.unpack_from('<HHLLHH', reader.read(16))
+  del format_code
+  return FmtChunk(
+      num_channels=num_channels,
+      sample_rate=sample_rate,
+      bytes_per_second=bytes_per_second,
+      block_align=block_align,
+      bits_per_sample=bits_per_sample,
+  )
+
+
+def read_harp_chunk(reader: BinaryIO) -> HarpChunk:
   """Parses an XWAV header with its associated subchunks.
 
   Args:
@@ -82,7 +136,7 @@ def header_from_harp_chunk(reader: BinaryIO) -> Header:
       start of the content, that is after the size, of the HARP chunk.)
 
   Returns:
-    Header dataclass parsed from the given HARP chunk.
+    HarpChunk dataclass parsed from the reader.
   """
 
   geo_scale = 100000  # decimal degrees per unit of int latitude and longitude
@@ -120,7 +174,7 @@ def header_from_harp_chunk(reader: BinaryIO) -> Header:
             gain=gain,
         ))
 
-  header = Header(
+  return HarpChunk(
       wav_version_number=wav_version_number,
       firmware_version_number=firmware_version_number,
       instrument_id=instrument_id,
@@ -134,8 +188,6 @@ def header_from_harp_chunk(reader: BinaryIO) -> Header:
       subchunks=subchunks,
   )
 
-  return header
-
 
 def header_from_wav(reader: BinaryIO) -> Optional[Header]:
   """Parses an XWAV header from a WAV file.
@@ -145,8 +197,7 @@ def header_from_wav(reader: BinaryIO) -> Optional[Header]:
       file.
 
   Returns:
-    Header dataclass parsed from the "harp" chunk or None if there is no such
-    chunk.
+    Header dataclass parsed from WAV headers or None if any chunks are missing.
 
   Raises:
     ValueError if the reader does not read valid WAV file contents.
@@ -158,6 +209,8 @@ def header_from_wav(reader: BinaryIO) -> Optional[Header]:
   if riff_format != b'WAVE':
     raise ValueError('not a WAVE file')
 
+  fmt_chunk = None
+  harp_chunk = None
   current_chunk = None
   chunk_id = riff
   while chunk_id != HARP_CHUNK_ID:
@@ -166,13 +219,16 @@ def header_from_wav(reader: BinaryIO) -> Optional[Header]:
     try:
       current_chunk = chunk.Chunk(reader, bigendian=False)
       chunk_id = current_chunk.getname()
+      if chunk_id == FMT_CHUNK_ID:
+        fmt_chunk = read_fmt_chunk(current_chunk)
+      if chunk_id == HARP_CHUNK_ID:
+        if not fmt_chunk:
+          raise ValueError('"fmt " chunk should precede "harp" chunk')
+        harp_chunk = read_harp_chunk(reader)
     except EOFError:
       return None
 
-  if chunk_id == HARP_CHUNK_ID:
-    return header_from_harp_chunk(reader)
-  else:
-    return None
+  return Header.from_chunks(fmt_chunk, harp_chunk)
 
 
 def header_from_flac(reader: BinaryIO) -> Optional[Header]:
@@ -189,16 +245,24 @@ def header_from_flac(reader: BinaryIO) -> Optional[Header]:
       "riff" metadata block contains a "harp" chunk.
 
   Returns:
-    Header dataclass parsed from the "harp" chunk.
+    Header dataclass parsed from the APPLICATION metadata or None if that block
+    or WAV "fmt " or "harp" chunks are missing.
   """
   application_metadata_code = 2
 
   flac_reader = flac.FLAC(reader)
+
+  fmt_chunk = None
+  harp_chunk = None
   for metadata_block in flac_reader.metadata_blocks:
     if metadata_block.code == application_metadata_code:
       riff, chunk_id, size = struct.unpack('<4s4sI', metadata_block.data[:12])
-      del size
       assert riff == b'riff'
+      del size
+      chunk_reader = io.BytesIO(metadata_block.data[12:])
+      if chunk_id == FMT_CHUNK_ID:
+        fmt_chunk = read_fmt_chunk(chunk_reader)
       if chunk_id == HARP_CHUNK_ID:
-        return header_from_harp_chunk(io.BytesIO(metadata_block.data[12:]))
-  return None
+        harp_chunk = read_harp_chunk(chunk_reader)
+
+  return Header.from_chunks(fmt_chunk, harp_chunk)
