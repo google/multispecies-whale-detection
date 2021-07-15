@@ -122,12 +122,11 @@ class Annotation:
 
     Args:
       row: Dictionary mapping CSV headers to field values. The headers must
-        include "label" and one of ("begin" / "end" floating-point endpoints
-        in seconds relative to the start of the file) or ("begin_utc" /
-        "end_utc" endpoints as absolute times as strings in any format that
+        include "label" and one of ("begin" / "end" floating-point endpoints in
+        seconds relative to the start of the file) or ("begin_utc" / "end_utc"
+        endpoints as absolute times as strings in any format that
         dateutil.parser will convert to an aware datetime). When both are
-        present, only the endpoints relative to the start of the file are
-        used.
+        present, only the endpoints relative to the start of the file are used.
 
     Returns:
       Annotation parsed from the CSV row.
@@ -371,7 +370,8 @@ def audio_example(waveform: np.array, sample_rate: int,
   return example
 
 
-def read_annotations(readable_file: BinaryIO) -> Iterable[Annotation]:
+def read_annotations(
+    readable_file: BinaryIO) -> Iterable[Tuple[str, Annotation]]:
   """Parses an annotations CSV file.
 
   See py:meth:Annotation.parse_csv_row for a description of the format.
