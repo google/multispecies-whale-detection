@@ -27,20 +27,18 @@ MATLAB code for writing headers in this format can be found at
 
 https://github.com/MarineBioAcousticsRC/Triton/blob/master/wrxwavhd.m
 """
-
 import chunk
+import dataclasses
 import datetime
 import enum
 import io
 import struct
-from typing import BinaryIO, Iterable, List, Sequence, Tuple, TypeVar
+from typing import BinaryIO, Iterable, Sequence, Tuple, TypeVar
 
-from dataclasses import dataclass
 import mutagen
 from mutagen import flac
-
-FMT_CHUNK_ID = b'fmt '  # (trailing space intentional)
-HARP_CHUNK_ID = b'harp'
+import numpy as np
+import soundfile
 
 
 class Error(Exception):
@@ -48,8 +46,8 @@ class Error(Exception):
   pass
 
 
-class NoHarpChunkError(Error):
-  """Raised when reading an otherwise valid file with no "harp" chunk."""
+class MissingChunkError(Error):
+  """Raised when one of the "fmt " or "harp" chunks is missing."""
 
 
 class CorruptHeadersError(Error):
@@ -59,11 +57,6 @@ class CorruptHeadersError(Error):
 
 class OutOfRangeError(Error):
   """Raised when XWAV headers reference an inaccessible file position."""
-  pass
-
-
-class AudioFormatError(Error):
-  """Raised in case of an unsupported WAVE audio format code."""
   pass
 
 
@@ -79,7 +72,7 @@ class AudioFormat(enum.Enum):
   EXTENSIBLE = 0xfffe
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class FmtChunk:
   """Metadata from the standard WAV "fmt " chunk."""
   audio_format: AudioFormat
@@ -118,7 +111,7 @@ SubchunkType = TypeVar('SubchunkType', bound='Subchunk')
 HarpChunkType = TypeVar('HarpChunkType', bound='HarpChunk')
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Subchunk:
   """HARP subchunk metadata, including length, position, and UTC start time."""
   time: datetime
@@ -192,7 +185,7 @@ class Subchunk:
         ))
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class HarpChunk:
   """Metadata from the XWAV-specific "harp" chunk."""
   wav_version_number: int
@@ -297,7 +290,7 @@ class HarpChunk:
       subchunk.write(writer)
 
 
-@dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True)
 class Header:
   """Full parsed XWAV header, including standard WAV headers."""
   fmt_chunk: FmtChunk
@@ -307,6 +300,39 @@ class Header:
 def _clean_header_str(value: bytes) -> str:
   """Null-terminates, strips, and removes trailing underscores."""
   return value.split(b'\x00')[0].decode().strip().rstrip('_')
+
+
+def header_from_chunks(chunks: Iterable[Tuple[str, BinaryIO]]) -> Header:
+  """Template method for XWAV header parsing.
+
+  Uncompressed and FLAC-compressed XWAVs need different implementations for
+  iterating the WAVE chunks. This method parses the header from a general
+  iterable of chunks.
+
+  Args:
+    chunks: Iteratable of chunk (id, data) pairs. The data element should be
+      positioned at the beginning of the chunk contents as opposed to at the
+      chunk id.
+
+  Returns:
+    Header dataclass parsed from WAV headers or None if any chunks are missing.
+
+  Raises:
+    MissingChunkError: if the WAV headers are valid but the "harp" or "fmt "
+      chunk is missing.
+  """
+  fmt_chunk = None
+  harp_chunk = None
+  for chunk_id, chunk_bytes in chunks:
+    if chunk_id == b'fmt ':
+      fmt_chunk = FmtChunk.read(chunk_bytes)
+    elif chunk_id == b'harp':
+      harp_chunk = HarpChunk.read(chunk_bytes)
+    if fmt_chunk and harp_chunk:
+      break
+  if not (fmt_chunk and harp_chunk):
+    raise MissingChunkError
+  return Header(fmt_chunk=fmt_chunk, harp_chunk=harp_chunk)
 
 
 def header_from_wav(reader: BinaryIO) -> Header:
@@ -321,8 +347,10 @@ def header_from_wav(reader: BinaryIO) -> Header:
 
   Raises:
     CorruptHeadersError: if the reader does not read valid WAV file contents.
-    NoHarpChunkError: if the WAV headers are valid but there is no "harp" chunk.
+    MissingChunkError: if the WAV headers are valid but the "harp" or "fmt "
+      chunk is missing.
   """
+  # Validates that we have a WAV file.
   try:
     riff, riff_size, riff_format = struct.unpack('<4sI4s', reader.read(12))
   except struct.error as e:
@@ -333,28 +361,16 @@ def header_from_wav(reader: BinaryIO) -> Header:
   if riff_format != b'WAVE':
     raise CorruptHeadersError('RIFF identifier was not WAVE')
 
-  fmt_chunk = None
-  harp_chunk = None
-  current_chunk = None
-  chunk_id = riff
-  while chunk_id != HARP_CHUNK_ID:
-    if current_chunk:
-      current_chunk.skip()
-    try:
-      current_chunk = chunk.Chunk(reader, bigendian=False)
-      chunk_id = current_chunk.getname()
-      if chunk_id == FMT_CHUNK_ID:
-        fmt_chunk = FmtChunk.read(current_chunk)
-      if chunk_id == HARP_CHUNK_ID:
-        if not fmt_chunk:
-          raise CorruptHeadersError('"fmt " chunk should precede "harp" chunk')
-        harp_chunk = HarpChunk.read(reader)
-    except EOFError:
-      break
+  def generate_chunks() -> Iterable[Tuple[str, BinaryIO]]:
+    current_chunk = chunk.Chunk(reader, bigendian=False)
+    while current_chunk.getname() != 'data':
+      yield current_chunk.getname(), current_chunk
+      try:
+        current_chunk = chunk.Chunk(reader, bigendian=False)
+      except EOFError:
+        break
 
-  if not (fmt_chunk and harp_chunk):
-    raise NoHarpChunkError
-  return Header(fmt_chunk=fmt_chunk, harp_chunk=harp_chunk)
+  return header_from_chunks(generate_chunks())
 
 
 def header_from_flac(reader: BinaryIO) -> Header:
@@ -376,8 +392,8 @@ def header_from_flac(reader: BinaryIO) -> Header:
 
   Raises:
     CorruptHeadersError: if the expected FLAC headers are missing of invalid.
-    NoHarpChunkError: if the FLAC file is valid but there is no "harp" chunk in
-      the "riff" APPLICATION metadata.
+    MissingChunkError: if an expected chunk is missing from the "riff"
+      APPLICATION metadata.
   """
   application_metadata_code = 2
 
@@ -386,60 +402,46 @@ def header_from_flac(reader: BinaryIO) -> Header:
   except mutagen.MutagenError as e:
     raise CorruptHeadersError from e
 
-  fmt_chunk = None
-  harp_chunk = None
-  for metadata_block in flac_reader.metadata_blocks:
-    if metadata_block.code == application_metadata_code:
+  def generate_chunks() -> Iterable[Tuple[str, BinaryIO]]:
+    for metadata_block in flac_reader.metadata_blocks:
+      if metadata_block.code != application_metadata_code:
+        continue
       try:
-        riff, chunk_id, size = struct.unpack('<4s4sI', metadata_block.data[:12])
+        application_metadata_id, chunk_id, size = struct.unpack(
+            '<4s4sI', metadata_block.data[:12])
       except struct.error as e:
         raise CorruptHeadersError from e
-      if riff != b'riff':
-        raise CorruptHeadersError(
-            'expected FLAC APPLICATION metadata to be of type "riff"')
+      if application_metadata_id != b'riff':
+        continue
       del size
       chunk_reader = io.BytesIO(metadata_block.data[12:])
-      if chunk_id == FMT_CHUNK_ID:
-        fmt_chunk = FmtChunk.read(chunk_reader)
-      if chunk_id == HARP_CHUNK_ID:
-        harp_chunk = HarpChunk.read(chunk_reader)
+      yield chunk_id, chunk_reader
 
-  if not (fmt_chunk and harp_chunk):
-    raise NoHarpChunkError
-  return Header(fmt_chunk=fmt_chunk, harp_chunk=harp_chunk)
+  return header_from_chunks(generate_chunks())
 
 
 class Reader:
   """Controller for reading XWAV audio one subchunk at a time."""
-
-  # All real XWAVs known to the authors are 16-bit integer PCM.
-  # Treating this as a constant and validating against headers simplifies the
-  # implementation.
-  BYTES_PER_SAMPLE = 2
 
   def __init__(self, byte_stream: BinaryIO):
     """Initializes this reader for a given byte stream.
 
     Args:
       byte_stream: File-like object positioned at the beginning of an entire
-        XWAV file.
+        XWAV file, uncompressed or FLAC-compressed with --keep-foreign-metadata.
 
     Raises:
       CorruptHeadersError: if the reader does not read valid WAV file contents.
-      NoHarpChunkError: if the WAV headers are valid but there is no "harp"
-        chunk.
-      AudioFormatError: if the WAVE audio format code is unsupported.
+    MissingChunkError: if the WAV headers are valid but the "harp" or "fmt "
+      chunk is missing.
     """
-    self._byte_stream = byte_stream
-    self._header = header_from_wav(byte_stream)
-
-    fmt_chunk = self._header.fmt_chunk
-    audio_format = fmt_chunk.audio_format
-    if audio_format != AudioFormat.PCM:
-      raise AudioFormatError('only PCM format is supported; got ' +
-                             audio_format)
-    if fmt_chunk.block_align != self.BYTES_PER_SAMPLE * fmt_chunk.num_channels:
-      raise AudioFormatError('only 16-bit integer PCM is supported')
+    try:
+      self._header = header_from_wav(byte_stream)
+    except CorruptHeadersError:
+      byte_stream.seek(0)
+      self._header = header_from_flac(byte_stream)
+    byte_stream.seek(0)
+    self._soundfile = soundfile.SoundFile(byte_stream)
 
   @property
   def header(self):
@@ -449,7 +451,7 @@ class Reader:
   def subchunks(self):
     return self._header.harp_chunk.subchunks
 
-  def __iter__(self) -> Iterable[Tuple[Subchunk, List[int]]]:
+  def __iter__(self) -> Iterable[Tuple[Subchunk, np.ndarray]]:
     """Iterator for subchunk metadata and audio.
 
     The audio is represented as a list of 16-bit integers obtained from
@@ -465,10 +467,31 @@ class Reader:
     subchunk = self.subchunks[subchunk_index]
     return subchunk, self._read_subchunk(subchunk)
 
-  def _read_subchunk(self, subchunk: Subchunk) -> List[int]:
-    self._byte_stream.seek(subchunk.byte_loc)
-    read_bytes = self._byte_stream.read(subchunk.byte_length)
-    if len(read_bytes) < subchunk.byte_length:
-      raise OutOfRangeError
-    num_samples = subchunk.byte_length // self.BYTES_PER_SAMPLE
-    return struct.unpack('<%dh' % num_samples, read_bytes)
+  def _read_subchunk(self, subchunk: Subchunk) -> np.ndarray:
+    """Reads the audio for a given subchunk.
+
+    Args:
+      subchunk: A subchunk from the byte stream passed to __init__. It will be
+        used to determine the offset and length of the audio read.
+
+    Returns:
+      A (frames x channels) numpy array of int16 PCM audio.
+
+    Raises:
+      OutOfRangeError: if the data range referenced by the subchunk argument is
+        outside the byte stream.
+    """
+    block_align = self.header.fmt_chunk.block_align
+    audio_begin_byte_offset = self.subchunks[0].byte_loc
+    frame_offset = (subchunk.byte_loc - audio_begin_byte_offset) // block_align
+    subchunk_duration_frames = subchunk.byte_length // block_align
+
+    self._soundfile.seek(frame_offset, whence=soundfile.SEEK_SET)
+    samples = self._soundfile.read(
+        frames=subchunk_duration_frames, dtype='int16', always_2d=True)
+
+    frames, channels = samples.shape
+    del channels
+    if subchunk.byte_length != frames * block_align:
+      raise OutOfRangeError('subchunk was truncated')
+    return samples

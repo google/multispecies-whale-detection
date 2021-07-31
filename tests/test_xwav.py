@@ -12,6 +12,8 @@ from multispecies_whale_detection import xwav
 # unsigned integer size.
 CHUNK_PREAMBLE_LENGTH = 8
 
+HARP_CHUNK_ID = b'harp'
+
 
 def fixture_path(basename: str) -> str:
   return os.path.join(os.path.dirname(__file__), basename)
@@ -174,7 +176,7 @@ def insert_harp_chunk(harp_chunk: xwav.HarpChunk,
   serialized_harp_chunk = harp_chunk_io.getbuffer()
 
   # Rewrite the entire file size.
-  harp_id_and_size = struct.pack('<4sI', xwav.HARP_CHUNK_ID,
+  harp_id_and_size = struct.pack('<4sI', HARP_CHUNK_ID,
                                  len(serialized_harp_chunk))
   entire_file_size = (
       len(wav_reader.getbuffer()) + len(serialized_harp_chunk) +
@@ -215,7 +217,7 @@ def fixture_two_chunk_xwav() -> BinaryIO:
   # The eventual size of the HARP chunk will be required for computing
   # correct Subchunk.byte_loc values.
   harp_chunk_size = xwav.HarpChunk.serialized_len(num_subchunks=2)
-  harp_id_and_size = struct.pack('<4sI', xwav.HARP_CHUNK_ID, harp_chunk_size)
+  harp_id_and_size = struct.pack('<4sI', HARP_CHUNK_ID, harp_chunk_size)
   data_start = data_start_no_harp + len(harp_id_and_size) + harp_chunk_size
 
   return insert_harp_chunk(
@@ -254,12 +256,12 @@ class TestXwav(unittest.TestCase):
       self.assertEqual(fixture_header(), header)
 
   def test_plain_wav_header_is_none(self):
-    with self.assertRaises(xwav.NoHarpChunkError):
+    with self.assertRaises(xwav.MissingChunkError):
       with open(fixture_path('plain_headers.wav'), 'rb') as reader:
         _ = xwav.header_from_wav(reader)
 
   def test_plain_flac_header_is_none(self):
-    with self.assertRaises(xwav.NoHarpChunkError):
+    with self.assertRaises(xwav.MissingChunkError):
       with open(fixture_path('plain_headers.flac'), 'rb') as reader:
         _ = xwav.header_from_flac(reader)
 
@@ -290,10 +292,12 @@ class TestXwav(unittest.TestCase):
 
     self.assertEqual(fixture_harp_chunk, reader_harp_chunk)
 
-  def test_reader_reads_two_chunk_fixture(self):
-    xwav_io: BinaryIO = fixture_two_chunk_xwav()
+  def reader_reads_two_chunk_fixture_template(self, reader):
+    """Test template for WAV and FLAC Reader success cases.
 
-    reader = xwav.Reader(xwav_io)
+    Args:
+      reader: A newly-initialized Reader for fixture_two_chunk_xwav.
+    """
     iter_subchunks = iter(reader)
     first_subchunk, first_samples = next(iter_subchunks)
     second_subchunk, second_samples = next(iter_subchunks)
@@ -312,6 +316,11 @@ class TestXwav(unittest.TestCase):
     for sample in second_samples:
       self.assertEqual(1 << 10, abs(sample))
 
+  def test_reader_reads_two_chunk_fixture(self):
+    xwav_io: BinaryIO = fixture_two_chunk_xwav()
+    reader = xwav.Reader(xwav_io)
+    self.reader_reads_two_chunk_fixture_template(reader)
+
   def test_read_out_of_range(self):
     # The subchunks in this fixture file actually reference audio beyond the end
     # of the file.
@@ -329,6 +338,27 @@ class TestXwav(unittest.TestCase):
 
     self.assertEqual(10, len(samples))
     self.assertEqual(subchunk, reader.subchunks[subchunk_index])
+
+  def test_initialize_reader_flac(self):
+    with open(fixture_path('fixture_two_chunk_xwav.x.flac'), 'rb') as infile:
+      reader = xwav.Reader(infile)
+
+      self.assertIsNotNone(reader.header)
+
+  def test_reader_reads_two_chunk_fixture_flac(self):
+    with open(fixture_path('fixture_two_chunk_xwav.x.flac'), 'rb') as infile:
+      reader = xwav.Reader(infile)
+
+      self.reader_reads_two_chunk_fixture_template(reader)
+
+  def test_reader_reads_from_bytesio_flac(self):
+    flac_io = io.BytesIO()
+    with open(fixture_path('fixture_two_chunk_xwav.x.flac'), 'rb') as infile:
+      flac_io.write(infile.read())
+    flac_io.seek(0)
+    reader = xwav.Reader(flac_io)
+
+    self.reader_reads_two_chunk_fixture_template(reader)
 
 
 if __name__ == '__main__':
