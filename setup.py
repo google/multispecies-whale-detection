@@ -62,6 +62,7 @@ setuptools.setup(
     author_email='bioacoustics-project@google.com',
     install_requires=[
         'apache_beam[gcp]',
+        'cffi',
         'python-dateutil',
         'intervaltree',
         'mutagen',
