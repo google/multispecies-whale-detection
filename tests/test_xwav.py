@@ -1,6 +1,7 @@
 import datetime
 import io
 import os
+import shutil
 import struct
 from typing import BinaryIO
 import unittest
@@ -185,8 +186,8 @@ def insert_harp_chunk(harp_chunk: xwav.HarpChunk,
                            entire_file_size - CHUNK_PREAMBLE_LENGTH, b'WAVE')
 
   data_chunk_start = wav_data_start(wav_reader) - CHUNK_PREAMBLE_LENGTH
-  fmt_chunk = wav_reader.getbuffer()[len(riff_chunk):data_chunk_start]
-  data_chunk = wav_reader.getbuffer()[data_chunk_start:]
+  wav_reader.seek(len(riff_chunk))
+  fmt_chunk = wav_reader.read(data_chunk_start - len(riff_chunk))
 
   xwav_io.write(riff_chunk)
   xwav_io.write(fmt_chunk)
@@ -195,7 +196,7 @@ def insert_harp_chunk(harp_chunk: xwav.HarpChunk,
   xwav_io.write(harp_id_and_size)
   xwav_io.write(serialized_harp_chunk)
 
-  xwav_io.write(data_chunk)
+  shutil.copyfileobj(wav_reader, xwav_io)
 
   xwav_io.seek(0)
   return xwav_io
