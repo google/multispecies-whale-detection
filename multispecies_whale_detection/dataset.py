@@ -26,14 +26,13 @@ class Features(enum.Enum):
   """Feature keys and corresponding parsing configurations for audio clips."""
   AUDIO = Feature('audio_raw_pcm16', tf.io.FixedLenFeature([], tf.string))
   SAMPLE_RATE = Feature('sample_rate', tf.io.FixedLenFeature([], tf.int64))
+  CHANNEL = Feature('channel', tf.io.FixedLenFeature([], tf.int64))
 
-  FILENAME = Feature('source_source_filename',
-                     tf.io.FixedLenFeature([], tf.string))
-  CHANNEL = Feature('source_channel', tf.io.FixedLenFeature([], tf.int64))
-  OFFSET = Feature('source_offset_seconds', tf.io.FixedLenFeature([],
-                                                                  tf.float32))
-  # TODO(mattharvey): Add 'source_utc' float32 once the reader implements UTC
-  # timebase.
+  FILENAME = Feature('filename', tf.io.FixedLenFeature([], tf.string))
+  START_RELATIVE_TO_FILE = Feature('start_relative_to_file',
+                                   tf.io.FixedLenFeature([], tf.float32))
+  START_UTC = Feature('start_utc',
+                      tf.io.FixedLenFeature([], tf.float32, default_value=-1))
 
   ANNOTATION_BEGIN = Feature('annotation_begin',
                              tf.io.VarLenFeature(tf.float32))

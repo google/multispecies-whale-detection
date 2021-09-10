@@ -24,10 +24,10 @@ def run():
   os.mkdir(out_dir)
 
   configuration = examplegen.Configuration(
-      input_directory=os.path.expanduser('~/tmp/whale/examplegen_input'),
+      input_directory=os.path.expanduser('~/tmp/whale/examplegen_input_utc'),
       output_directory=out_dir,
-      resample_rate=16000,
-      clip_duration_seconds=10.0,
+      resample_rate=4000,
+      clip_duration_seconds=30.0,
   )
 
   options = pipeline_options.PipelineOptions(runner='DirectRunner',)
