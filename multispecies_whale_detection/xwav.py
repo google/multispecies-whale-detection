@@ -105,6 +105,23 @@ class FmtChunk:
         bits_per_sample=bits_per_sample,
     )
 
+  def write(self, writer: BinaryIO) -> None:
+    """Serializes this in the WAVE format.
+
+    Args:
+      writer: file-like object to write to.
+    """
+    writer.write(
+        struct.pack(
+            '<HHLLHH',
+            self.audio_format.value,
+            self.num_channels,
+            self.sample_rate,
+            self.bytes_per_second,
+            self.block_align,
+            self.bits_per_sample,
+        ))
+
 
 # For type annotations of factory methods.
 SubchunkType = TypeVar('SubchunkType', bound='Subchunk')
@@ -418,6 +435,108 @@ def header_from_flac(reader: BinaryIO) -> Header:
       yield chunk_id, chunk_reader
 
   return header_from_chunks(generate_chunks())
+
+
+def write(num_channels: int, sample_rate: int, harp_chunk: HarpChunk,
+          subchunks: Iterable[Tuple[datetime.datetime, np.ndarray]],
+          subchunks_len: int, output: BinaryIO) -> None:
+  """Writes an XWAV file.
+
+  The output audio format is 16-bit integer PCM.
+
+  Args:
+    num_channels: Number of channels. Set in the output FmtChunk and checked
+      against each element in subchunks.
+    sample_rate: Audio sample rate. Set in the FmtChunk and each Subchunk in the
+      output HarpChunk. Must be the same for each element in subchunks.
+    harp_chunk: HarpChunk from which the top-level metadata will be taken. Its
+      subchunks property will be ignored in favor of computing the output
+      HarpChunk.subchunks from the subchunks Iterable.
+    subchunks: Iterable that yields UTC start times and audio with dimensions
+      (num_samples, num_channels) starting at those times. num_channels will be
+      checked against the one given as an argument and must be the same for the
+      entire Iterable. num_samples may be different for each element. The NumPy
+      array with the audio must already be of type np.int16 and will not be
+      rescaled.
+    subchunks_len: The number of elements of the subchunks Iterable. Knowing
+      this in advance is required to compute the correct size of the HarpChunk.
+    output: Seekable, binary, file-like object into which the output will be
+      written.
+
+  Raises:
+    ValueError: If the number of elements from iterating subchunks does not
+      equal subchunks_len or if any element of subchunks has second dimension
+      unequal to num_channels. In either case, bytes might have already been
+      written to output at the time of the exception, and the caller should
+      delete any destination file.
+  """
+  bytes_per_sample = 2
+
+  # Reserve bytes for header chunks that will be written last, because some of
+  # them depend on or aggregate the sizes of the subchunks to be iterated.
+  iff_header_len = 8
+  iff_format = b'WAVE'
+  riff_len = iff_header_len + len(iff_format)
+  fmt_len = 24
+  harp_len = iff_header_len + HarpChunk.serialized_len(subchunks_len)
+  data_header_len = iff_header_len
+  output.write(b'\0' * (riff_len + fmt_len + harp_len + data_header_len))
+  data_begin_pos = output.tell()
+
+  harp_chunk_subchunks = []
+  for time, samples in subchunks:
+    if samples.shape[1] != num_channels:
+      raise ValueError('num_channels != samples.shape[1]')
+    byte_loc = output.tell()
+    if samples.dtype != np.int16:
+      raise ValueError('subchunk audio was not np.int16')
+    output.write(samples.tobytes())
+    byte_length = output.tell() - byte_loc
+    # magic copy/paste from wrxwavhd.m (see module docstring)
+    write_length = byte_length // (512 - 12)  # sector - 12 bytes of timing
+    subchunk = Subchunk(
+        time=time,
+        byte_loc=byte_loc,
+        byte_length=byte_length,
+        write_length=write_length,
+        sample_rate=sample_rate,
+        gain=1,
+    )
+    harp_chunk_subchunks.append(subchunk)
+
+  if len(harp_chunk_subchunks) != subchunks_len:
+    raise ValueError('len(subchunks) (Iterable) != subchunks_len')
+
+  file_size = output.tell()
+  output.seek(0)
+  output.write(
+      struct.pack('<4sI4s', b'RIFF', file_size - iff_header_len, iff_format))
+  output.write(struct.pack('<4sI', b'fmt ', fmt_len - iff_header_len))
+  FmtChunk(
+      audio_format=AudioFormat.PCM,
+      num_channels=num_channels,
+      sample_rate=sample_rate,
+      bytes_per_second=(num_channels * sample_rate * bytes_per_sample),
+      block_align=(num_channels * bytes_per_sample),
+      bits_per_sample=(bytes_per_sample * 8),
+  ).write(output)
+  output.write(struct.pack('<4sI', b'harp', harp_len - iff_header_len))
+  HarpChunk(
+      wav_version_number=harp_chunk.wav_version_number,
+      firmware_version_number=harp_chunk.firmware_version_number,
+      instrument_id=harp_chunk.instrument_id,
+      site_name=harp_chunk.site_name,
+      experiment_name=harp_chunk.experiment_name,
+      disk_sequence_number=harp_chunk.disk_sequence_number,
+      disk_serial_number=harp_chunk.disk_serial_number,
+      longitude=harp_chunk.longitude,
+      latitude=harp_chunk.latitude,
+      depth=harp_chunk.depth,
+      subchunks=harp_chunk_subchunks,
+  ).write(output)
+  output.write(struct.pack('<4sI', b'data', file_size - data_begin_pos))
+  # PCM audio was written earlier, to know Subchunk.byte_loc.
+  output.seek(0)
 
 
 class Reader:

@@ -322,6 +322,32 @@ class TestXwav(unittest.TestCase):
     reader = xwav.Reader(xwav_io)
     self.reader_reads_two_chunk_fixture_template(reader)
 
+  def test_round_trip_read_write_read(self):
+    xwav_io: BinaryIO = fixture_two_chunk_xwav()
+    reader = xwav.Reader(xwav_io)
+    fmt_chunk = reader.header.fmt_chunk
+    harp_chunk = reader.header.harp_chunk
+    subchunk_generator = (
+        (subchunk.time, samples) for subchunk, samples in reader)
+
+    write_output = io.BytesIO()
+    xwav.write(
+        num_channels=fmt_chunk.num_channels,
+        sample_rate=fmt_chunk.sample_rate,
+        harp_chunk=harp_chunk,
+        subchunks=subchunk_generator,
+        subchunks_len=len(harp_chunk.subchunks),
+        output=write_output,
+    )
+
+    write_output.seek(0)
+    with open('debug', 'wb') as outfile:
+      shutil.copyfileobj(write_output, outfile)
+
+    write_output.seek(0)
+    rereader = xwav.Reader(write_output)
+    self.reader_reads_two_chunk_fixture_template(rereader)
+
   def test_read_out_of_range(self):
     # The subchunks in this fixture file actually reference audio beyond the end
     # of the file.
