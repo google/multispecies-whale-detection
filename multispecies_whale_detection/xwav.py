@@ -163,8 +163,15 @@ class Subchunk:
       raise CorruptHeadersError from e
 
     try:
-      time = datetime.datetime(cls.ZERO_YEAR + year, month, day, hour, minute,
-                               second, ticks * cls.MICROSECONDS_PER_TICK)
+      time = datetime.datetime(
+          cls.ZERO_YEAR + year,
+          month,
+          day,
+          hour,
+          minute,
+          second,
+          ticks * cls.MICROSECONDS_PER_TICK,
+          tzinfo=datetime.timezone.utc)
     except ValueError as e:
       raise CorruptHeadersError from e
 
