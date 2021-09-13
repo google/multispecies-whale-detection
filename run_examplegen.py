@@ -9,6 +9,9 @@ Google Cloud Storage. Users need to edit at least:
   * output_directory
   * temp_location
   * project
+
+And possibly:
+  * region, if input/output/temp are in a single-region bucket.
 """
 import os
 import pathlib
@@ -23,7 +26,7 @@ def run():
   configuration = examplegen.Configuration(
       input_directory='gs://msw-dev/input',
       output_directory='gs://msw-dev/output',
-      resample_rate=16000,
+      resample_rate=4000,
       clip_duration_seconds=10.0,
   )
 

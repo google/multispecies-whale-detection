@@ -162,11 +162,16 @@ class Annotation:
 class ClipAnnotation(Annotation):
   """Annotation as time differences from the start of a clip.
 
-  This is similar to FileAnnotation (below), but parsing CSV will never return
-  this type, since it does not reference any audio. The distinct type is an
-  indication that the annotation has already been made relative to a particular
-  clip from a possibly longer file. Methods that perform that relativization
-  will return this type.
+  This type is used for annotations relative to an extracted clip of audio
+  intended to be included in its entirety into a TensorFlow Example.
+
+  This is in contrast to FileAnnotation (below). There, begin / end are in a
+  timeline whose zero point is at the start of the file. Here, the zero point
+  is at the beginning of a clip which often has been extracted from a longer
+  file.
+
+  audio_example packs these ClipAnnotations into parallel "annotation" fields
+  of a TensorFlow Example.
   """
   begin: datetime.timedelta
   end: datetime.timedelta
@@ -328,23 +333,25 @@ class AnnotationCoder(beam.coders.Coder):
 beam.coders.registry.register_coder(Annotation, AnnotationCoder)
 
 
-def read_annotations(
-    readable_file: BinaryIO) -> Iterable[Tuple[str, Annotation]]:
+def read_annotations(infile: BinaryIO) -> Iterable[Tuple[str, Annotation]]:
   """Parses an annotations CSV file.
 
   See py:meth:Annotation.parse_csv_row for a description of the format.
 
   Args:
-    readable_file: Binary file-like object positioned at the beginning of the
-      CSV.
+    infile: Binary file-like object positioned at the beginning of the CSV.
 
   Yields:
     Pairs of filename and parsed Annotation.
   """
-  with readable_file.open() as infile:
-    reader = csv.DictReader(io.TextIOWrapper(infile))
-    for row in reader:
-      yield (row['filename'], Annotation.parse_csv_row(row))
+  reader = csv.DictReader(io.TextIOWrapper(infile))
+  for row in reader:
+    yield (row['filename'], Annotation.parse_csv_row(row))
+
+
+def beam_read_annotations(readable_file: fileio.ReadableFile):
+  """Opens the file and calls read_annotations."""
+  return read_annotations(readable_file.open())
 
 
 def generate_clips(
@@ -369,14 +376,21 @@ def generate_clips(
     clip_duration: The desired length of each clip. When this does not evenly
       divide the duration of a subchunk (or whole file in the non-XWAV case),
       the remaining audio will be discarded.
+
+  Yields:
+    Pairs of clip metadata and NumPy arrays of audio of shape
+      (samples, channels).
   """
+  # TODO(mattharvey): Add the ability to specify hop size as a field of
+  # examplegen.Configuration and pass that field, or perhaps the whole
+  # Configuration, through to here.
+  hop = clip_duration_samples
   try:
     infile.seek(0)
     xwav_reader = xwav.Reader(infile)
     sample_rate = xwav_reader.header.fmt_chunk.sample_rate
     clip_duration_samples = np.round(clip_duration.total_seconds() *
                                      sample_rate).astype(int)
-    hop = clip_duration_samples
 
     # For ClipMetadata.start_relative_to_file, because clips may not exactly
     # fill the subchunk, we need to increment the subchunk start relative to
@@ -398,19 +412,25 @@ def generate_clips(
             start_relative_to_file=(subchunk_rel_file + clip_rel_subchunk),
             start_utc=(subchunk.time + clip_rel_subchunk),
         )
-        clip_samples = samples[:, begin:end]
+        clip_samples = samples[begin:end, :]
         yield (clip_metadata, clip_samples)
         clip_index_in_file += 1
       subchunk_rel_file += datetime.timedelta(
           seconds=subchunk_duration_samples / sample_rate)
   except xwav.Error:
+    # TODO(matharvey): Consider refactoring this by adding an abstraction layer
+    # around both SoundFile and xwav.Reader, which would present a single API
+    # here and give an extension point for new reader implementations. Do not
+    # forget that the non-XWAV branch may need to work with hours-long files
+    # that are too big to pre-read into memory, nor that the non-XWAV branch
+    # does not implement hop size yet.
     infile.seek(0)
     reader = soundfile.SoundFile(infile)
     sample_rate = reader.samplerate
     clip_duration_samples = np.round(clip_duration.total_seconds() *
                                      sample_rate).astype(int)
-    hop = clip_duration_samples
 
+    del hop  # SoundFile read defaults to continuing where it left off.
     clip_index_in_file = 0
     while reader.tell() + clip_duration_samples < reader.frames:
       clip_rel_file = datetime.timedelta(seconds=reader.tell() /
@@ -431,7 +451,7 @@ def generate_clips(
 
 def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
                   sample_rate: int, channel: int,
-                  annotations: Iterable[Annotation]) -> tf.train.Example:
+                  annotations: Iterable[ClipAnnotation]) -> tf.train.Example:
   """Constructs a TensorFlow Example with labeled audio.
 
   Args:
@@ -471,8 +491,7 @@ def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
                clip_metadata.start_relative_to_file.total_seconds())
   if clip_metadata.start_utc:
     features[dataset.Features.START_UTC.value.name].float_list.value.append(
-        clip_metadata.start_utc.replace(
-            tzinfo=datetime.timezone.utc).timestamp())
+        clip_metadata.start_utc.timestamp())
 
   for annotation in annotations:
     features[
@@ -486,6 +505,41 @@ def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
             annotation.label.encode())
 
   return example
+
+
+class AnnotationTrees:
+
+  def __init__(self, annotations: Iterable[Annotation]):
+    self._file_tree = intervaltree.IntervalTree()
+    self._utc_tree = intervaltree.IntervalTree()
+    self._empty_count = 0
+    for annotation in annotations:
+      if annotation.end <= annotation.begin:
+        self._empty_count += 1
+        continue
+      is_utc = isinstance(annotation, UTCAnnotation)
+      is_file = isinstance(annotation, FileAnnotation)
+      if is_utc:
+        self._utc_tree[annotation.begin:annotation.end] = annotation
+      elif is_file:
+        self._file_tree[annotation.begin:annotation.end] = annotation
+      else:
+        assert is_utc or is_file
+
+  def annotate_clip(self,
+                    clip_metadata: ClipMetadata) -> Iterable[ClipAnnotation]:
+    file_intervals = self._file_tree[clip_metadata.start_relative_to_file:(
+        clip_metadata.start_relative_to_file + clip_metadata.duration)]
+    if clip_metadata.start_utc:
+      utc_intervals = self._utc_tree[clip_metadata.start_utc:(
+          clip_metadata.start_utc + clip_metadata.duration)]
+    else:
+      utc_intervals = []
+    for interval in itertools.chain(iter(file_intervals), iter(utc_intervals)):
+      annotation = interval.data
+      clip_annotation = annotation.make_relative(clip_metadata)
+      if clip_annotation:
+        yield clip_annotation
 
 
 def make_audio_examples(
@@ -525,17 +579,7 @@ def make_audio_examples(
     return
   filename = readable_file.metadata.path
 
-  file_annotations_tree = intervaltree.IntervalTree()
-  utc_annotations_tree = intervaltree.IntervalTree()
-  for annotation in join_result['annotations']:
-    if isinstance(annotation, UTCAnnotation):
-      utc_annotations_tree[annotation.begin:annotation.end] = annotation
-    elif isinstance(annotation, FileAnnotation):
-      file_annotations_tree[annotation.begin:annotation.end] = annotation
-    else:
-      beam.metrics.Metrics.counter('examplegen',
-                                   'annotation_type_unknown').inc()
-      continue
+  annotation_trees = AnnotationTrees(join_result['annotations'])
 
   with readable_file.open() as infile:
     for clip_metadata, clip_samples in generate_clips(filename, infile,
@@ -550,18 +594,7 @@ def make_audio_examples(
             axis=0,
         )
 
-      intervals = file_annotations_tree[clip_metadata.start_relative_to_file:(
-          clip_metadata.start_relative_to_file + clip_metadata.duration)]
-      if clip_metadata.start_utc:
-        intervals = itertools.chain(
-            intervals, utc_annotations_tree[clip_metadata.start_utc:(
-                clip_metadata.start_utc + clip_metadata.duration)])
-      clip_annotations = []
-      for interval in intervals:
-        annotation = interval.data
-        clip_annotation = annotation.make_relative(clip_metadata)
-        if clip_annotation:
-          clip_annotations.append(clip_annotation)
+      clip_annotations = annotation_trees.annotate_clip(clip_metadata)
 
       for channel, waveform in enumerate(pcm_audio.T):
         # TODO(mattharvey): Option for annotations to pertain to either or all
@@ -616,7 +649,7 @@ def run(configuration: Configuration,
         | 'KeyAudioByFilename' >> beam.Map(lambda r: (r.metadata.path, r)))
     annotations = (
         csv_files | 'ReadCsv' >> fileio.ReadMatches()
-        | 'ParseCsv' >> beam.ParDo(read_annotations))
+        | 'ParseCsv' >> beam.ParDo(beam_read_annotations))
     labeled_streams = ({
         'audio': audio_streams,
         'annotations': annotations,

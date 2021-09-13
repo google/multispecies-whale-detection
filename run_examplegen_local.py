@@ -19,15 +19,15 @@ from multispecies_whale_detection import examplegen
 
 def run():
   """Configures and runs the pipeline and waits on completion."""
-  out_dir = os.path.expanduser('~/tmp/whale/examplegen_output')
+  out_dir = os.path.expanduser('~/tmp/examplegen/output')
   shutil.rmtree(out_dir)
   os.mkdir(out_dir)
 
   configuration = examplegen.Configuration(
-      input_directory=os.path.expanduser('~/tmp/whale/examplegen_input_utc'),
+      input_directory=os.path.expanduser('~/tmp/examplegen/input'),
       output_directory=out_dir,
       resample_rate=4000,
-      clip_duration_seconds=30.0,
+      clip_duration_seconds=10.0,
   )
 
   options = pipeline_options.PipelineOptions(runner='DirectRunner',)

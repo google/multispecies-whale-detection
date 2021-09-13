@@ -80,17 +80,12 @@ setuptools.setup(
         'intervaltree',
         'mutagen',
         'numpy',
-        'python-snappy',
         'resampy',
         'soundfile',
         'tensorflow',
-        # Beam dependencies
-        'avro',
-        'dill',
-        'fastavro',
-        'pytz',
-        # soundfile dependency
-        'cffi',
+        # not a direct dependency, but beam.io.tfrecordio asks for this to be as
+        # "fast as it could be"
+        'python-snappy',
     ],
     packages=['multispecies_whale_detection'],
     cmdclass={
