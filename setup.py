@@ -1,9 +1,18 @@
 """multispecies_whale_detection package specification.
 
-This is used both to provide a pip install for command line utilities that
-enable preprocessing and model training and to initialize Beam workers for the
-examplegen pipeline.
+Purposes:
+  * Configuration for pip install (locally and in Dataflow)
+  * apt install of libsndfile in Dataflow workers.
+
+Usage:
+  pip install .  # In the directory containing this file
+
+For local usage this trys to install libsndfile1, giving up if there is no apt
+command (such as on Windows or OS X, where PySoundFile installs its own
+dependencies) or if the user has insufficient privilege to run apt-get (in which
+case it is recommended to apt-get install libsndfile1 manually).
 """
+import ctypes
 # pylint: disable=g-importing-member
 from distutils.command.build import build as _build  # type: ignore
 # pylint: enable=g-importing-member
@@ -13,24 +22,24 @@ import setuptools
 
 
 class build(_build):  # pylint: disable=invalid-name
-  """A build command class that will be invoked during package install.
-
-  The package built using the current setup.py will be staged and later
-  installed in the worker using `pip install package'. This class will be
-  instantiated during install for this specific scenario and will trigger
-  running the custom commands specified.
-  """
-  sub_commands = _build.sub_commands + [('CustomCommands', None)]
+  """Override of the build command to install libsndfile when appropriate."""
+  sub_commands = _build.sub_commands + [('maybe_install_libsndfile', None)]
 
 
-CUSTOM_COMMANDS = [
-    ['apt-get', 'update'],
-    ['apt-get', '--assume-yes', 'install', 'libsndfile1'],
-]
+def _can_call_apt():
+  return subprocess.run(['apt-get', 'help'], check=False).returncode == 0
 
 
-class CustomCommands(setuptools.Command):
-  """A setuptools Command class able to run arbitrary commands."""
+def _sndfile_installed():
+  try:
+    ctypes.cdll.LoadLibrary('libsndfile.so.1')
+    return True
+  except OSError:
+    return False
+
+
+class MaybeInstallLibsndfile(setuptools.Command):
+  """A setuptools Command class that installs libsndfile on Linux with apt."""
 
   def initialize_options(self):
     pass
@@ -38,20 +47,24 @@ class CustomCommands(setuptools.Command):
   def finalize_options(self):
     pass
 
-  def RunCustomCommand(self, command_list):
-    p = subprocess.Popen(
-        command_list,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT)
-    stdout_data, _ = p.communicate()
-    if p.returncode != 0:
-      raise RuntimeError('Command %s failed: exit code: %s' %
-                         (command_list, p.returncode))
-
   def run(self):
-    for command in CUSTOM_COMMANDS:
-      self.RunCustomCommand(command)
+    if not _can_call_apt():
+      # Assuming we are on Windows or OS X where PySoundFile will manually
+      # install its C dependency.
+      return
+    if _sndfile_installed():
+      # Woo-hoo. We are derived from Debian, and PySoundFile will already be
+      # happy to have its dependency.
+      return
+    try:
+      subprocess.run(['apt-get', 'update'], check=True)
+      subprocess.run(['apt-get', '--assume-yes', 'install', 'libsndfile1'],
+                     check=True)
+    except subprocess.CalledProcessError:
+      raise Exception(
+          'We tried to call apt-get but it failed. We recommend installing '
+          'manually, like "sudo apt-get install libsndfile1" and re-running '
+          'pip install.')
 
 
 setuptools.setup(
@@ -72,9 +85,9 @@ setuptools.setup(
         'soundfile',
         'tensorflow',
     ],
-    packages=setuptools.find_packages(),
+    packages=['multispecies_whale_detection'],
     cmdclass={
         'build': build,
-        'CustomCommands': CustomCommands,
+        'maybe_install_libsndfile': MaybeInstallLibsndfile,
     },
 )
