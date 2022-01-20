@@ -49,14 +49,16 @@ def fixture_header():
           depth=720,
           subchunks=[
               xwav.Subchunk(
-                  time=datetime.datetime(2010, 2, 28, 2, 21, 15),
+                  time=datetime.datetime(
+                      2010, 2, 28, 2, 21, 15, tzinfo=datetime.timezone.utc),
                   byte_loc=34444,
                   byte_length=1500000,
                   write_length=3000,
                   sample_rate=10000,
                   gain=1),
               xwav.Subchunk(
-                  time=datetime.datetime(2010, 2, 28, 2, 22, 30),
+                  time=datetime.datetime(
+                      2010, 2, 28, 2, 22, 30, tzinfo=datetime.timezone.utc),
                   byte_loc=1534444,
                   byte_length=1500000,
                   write_length=3000,
@@ -134,14 +136,16 @@ def fixture_two_chunk_harp_chunk(data_start: int) -> xwav.HarpChunk:
       depth=6,
       subchunks=[
           xwav.Subchunk(
-              time=datetime.datetime(2021, 7, 15, 0, 27, 00),
+              time=datetime.datetime(
+                  2021, 7, 15, 0, 27, 00, tzinfo=datetime.timezone.utc),
               byte_loc=data_start + 0,
               byte_length=20,
               write_length=20,
               sample_rate=100,
               gain=1),
           xwav.Subchunk(
-              time=datetime.datetime(2021, 7, 15, 0, 28, 00),
+              time=datetime.datetime(
+                  2021, 7, 15, 0, 28, 00, tzinfo=datetime.timezone.utc),
               byte_loc=data_start + 20,
               byte_length=20,
               write_length=20,

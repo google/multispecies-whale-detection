@@ -74,8 +74,8 @@ setuptools.setup(
     author='Google Bioacoustics Project',
     author_email='bioacoustics-project@google.com',
     install_requires=[
+        'apache_beam',
         'apache_beam[gcp]',
-        'cffi',
         'python-dateutil',
         'intervaltree',
         'mutagen',
@@ -84,6 +84,13 @@ setuptools.setup(
         'resampy',
         'soundfile',
         'tensorflow',
+        # Beam dependencies
+        'avro',
+        'dill',
+        'fastavro',
+        'pytz',
+        # soundfile dependency
+        'cffi',
     ],
     packages=['multispecies_whale_detection'],
     cmdclass={

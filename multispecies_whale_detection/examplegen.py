@@ -10,6 +10,7 @@ import csv
 import datetime
 import functools
 import io
+import itertools
 import os
 from typing import BinaryIO, Dict, Iterable, Optional, Tuple, TypeVar, Union
 
@@ -17,9 +18,9 @@ import apache_beam as beam
 from apache_beam.io import fileio
 from dataclasses import dataclass
 from dateutil import parser as date_parser
-from dateutil import tz
 import intervaltree
 from multispecies_whale_detection import dataset
+from multispecies_whale_detection import xwav
 import numpy as np
 import resampy
 import soundfile
@@ -56,7 +57,7 @@ def _parse_utc(text: str) -> datetime.datetime:
   """Leniently parses a datetime, defaulting to UTC if no zone is provided."""
   parsed = date_parser.parse(text)
   if not parsed.tzinfo:
-    parsed = parsed.replace(tzinfo=tz.UTC)
+    parsed = parsed.replace(tzinfo=datetime.timezone.utc)
   return parsed
 
 
@@ -158,14 +159,27 @@ class Annotation:
 
 
 @dataclass
+class ClipAnnotation(Annotation):
+  """Annotation as time differences from the start of a clip.
+
+  This is similar to FileAnnotation (below), but parsing CSV will never return
+  this type, since it does not reference any audio. The distinct type is an
+  indication that the annotation has already been made relative to a particular
+  clip from a possibly longer file. Methods that perform that relativization
+  will return this type.
+  """
+  begin: datetime.timedelta
+  end: datetime.timedelta
+
+
+@dataclass
 class FileAnnotation(Annotation):
   """Annotation as time differences from the start of a file."""
   begin: datetime.timedelta
   end: datetime.timedelta
 
-  def relative_endpoints(
-      self, clip_metadata: ClipMetadata
-  ) -> Optional[Tuple[datetime.timedelta, datetime.timedelta]]:
+  def make_relative(self,
+                    clip_metadata: ClipMetadata) -> Optional[ClipAnnotation]:
     """Expresses this annotation as an interval within a given clip.
 
     Args:
@@ -173,14 +187,14 @@ class FileAnnotation(Annotation):
         the file it came from.
 
     Returns:
-      Begin and end offsets from the start of the clip or None if the annotation
-      does not overlap the clip.
+      An annotation relative to the given clip or None if there is no overlap.
     """
-    return _restrict_to_clip(
+    begin, end = _restrict_to_clip(
         self.begin - clip_metadata.start_relative_to_file,
         self.end - clip_metadata.start_relative_to_file,
         clip_metadata,
     )
+    return ClipAnnotation(begin=begin, end=end, label=self.label)
 
 
 @dataclass
@@ -188,10 +202,6 @@ class UTCAnnotation(Annotation):
   """Annotation whose endpoints are absolute datetimes.
 
   To avoid ambiguity, the datetimes must be time zone aware.
-
-  Development note: This isn't used at this revision. See TODO tagged
-  [utc_endpoints] that defers to another (soon) change to keep the size
-  of changes manageable.
   """
   begin: datetime.datetime
   end: datetime.datetime
@@ -203,26 +213,25 @@ class UTCAnnotation(Annotation):
     self.begin = begin
     self.end = end
 
-  def relative_endpoints(
-      self, clip_metadata: ClipMetadata
-  ) -> Optional[Tuple[datetime.timedelta, datetime.timedelta]]:
+  def make_relative(self,
+                    clip_metadata: ClipMetadata) -> Optional[ClipAnnotation]:
     """Expresses this annotation as an interval within a given clip.
 
     Args:
       clip_metadata: Description of the clip. start_utc must be set.
 
     Returns:
-      Begin and end offsets from the start of the clip or None if the annotation
-      does not overlap the clip.
+      An annotation relative to the given clip or None if there is no overlap.
 
     Raises:
-      ValueError if the clip_metadata has start_utc unset.
+      ValueError if clip_metadata.start_utc is None.
     """
-    return _restrict_to_clip(
+    begin, end = _restrict_to_clip(
         self.begin - clip_metadata.start_utc,
         self.end - clip_metadata.start_utc,
         clip_metadata,
     )
+    return ClipAnnotation(begin=begin, end=end, label=self.label)
 
 
 # Type of the values for the CoGroupByKey (filename) done by this pipeline.
@@ -262,12 +271,13 @@ class UTCDatetimeCoder(beam.coders.Coder):
          int_coder))
 
   def encode(self, instance):
-    utc = instance.astimezone(tz.UTC)
+    utc = instance.astimezone(datetime.timezone.utc)
     return self._tuple_coder.encode((utc.year, utc.month, utc.day, utc.hour,
                                      utc.minute, utc.second, utc.microsecond))
 
   def decode(self, encoded):
-    return datetime.datetime(*self._tuple_coder.decode(encoded), tzinfo=tz.UTC)
+    return datetime.datetime(
+        *self._tuple_coder.decode(encoded), tzinfo=datetime.timezone.utc)
 
 
 class AnnotationCoder(beam.coders.Coder):
@@ -318,58 +328,6 @@ class AnnotationCoder(beam.coders.Coder):
 beam.coders.registry.register_coder(Annotation, AnnotationCoder)
 
 
-def audio_example(waveform: np.array, sample_rate: int,
-                  annotations: Iterable[Annotation], filename: str,
-                  channel: int, offset_seconds: float) -> tf.train.Example:
-  """Constructs a TensorFlow Example with labeled audio.
-
-  Args:
-    waveform: 'audio_raw_pcm16' bytes feature with this raw, 16-bit,
-      little-endian PCM audio.
-    sample_rate: 'sample_rate' float feature scalar with the sample rate for
-      waveform.
-    annotations: 'annotation_begin', 'annotation_end', and 'annotation_label'
-      features give endpoints of the annotations on waveform in corresponding
-      indices.
-    filename: 'filename' bytes feature with the full path to the source audio
-      file, for reference.
-    channel: 'channel' int64 feature indicates the channel index from the source
-      audio.
-    offset_seconds: 'offset_seconds' float feature scalar with the offset of the
-      start of the chunk for this Example from the start of the audio file. (For
-      duty-cycled XWAV files, this will be computed in UTC, not seconds from the
-      start of the file.)
-
-  Returns:
-    A TensorFlow Example with features as documented in the Args section.
-  """
-  example = tf.train.Example()
-  features = example.features.feature
-
-  features[dataset.Features.AUDIO.value.name].bytes_list.value.append(
-      waveform.astype('<i2').tobytes())
-  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(
-      sample_rate)
-  features[dataset.Features.FILENAME.value.name].bytes_list.value.append(
-      filename.encode())
-  features[dataset.Features.CHANNEL.value.name].int64_list.value.append(channel)
-  features[dataset.Features.OFFSET.value.name].float_list.value.append(
-      offset_seconds)
-
-  for annotation in annotations:
-    features[
-        dataset.Features.ANNOTATION_BEGIN.value.name].float_list.value.append(
-            annotation.begin.total_seconds())
-    features[
-        dataset.Features.ANNOTATION_END.value.name].float_list.value.append(
-            annotation.end.total_seconds())
-    features[
-        dataset.Features.ANNOTATION_LABEL.value.name].bytes_list.value.append(
-            annotation.label.encode())
-
-  return example
-
-
 def read_annotations(
     readable_file: BinaryIO) -> Iterable[Tuple[str, Annotation]]:
   """Parses an annotations CSV file.
@@ -386,27 +344,161 @@ def read_annotations(
   with readable_file.open() as infile:
     reader = csv.DictReader(io.TextIOWrapper(infile))
     for row in reader:
-      # TODO(mattharvey): [utc_endpoints] Read UTC annotations when we don't
-      # have both 'begin' and 'end' columns and handle arbitrary mixtures of
-      # UTC and file annotations in the join on filename (make_audio_examples).
-      annotation = FileAnnotation(
-          begin=datetime.timedelta(seconds=float(row['begin'])),
-          end=datetime.timedelta(seconds=float(row['end'])),
-          label=row['label'],
+      yield (row['filename'], Annotation.parse_csv_row(row))
+
+
+def generate_clips(
+    filename: str, infile: BinaryIO, clip_duration: datetime.timedelta
+) -> Iterable[Tuple[ClipMetadata, np.array]]:
+  """Reads a file and generates equal-length clips and metadata.
+
+  In general the file may be much longer than the requested clip duration. The
+  start of the clip advances by the clip duration (disjoint tiling) until the
+  file (or subchunk, in the XWAV case) is exhausted.
+
+  This allows both XWAV and non-XWAV files to be treated as the same type by
+  calling code, despite the fact that XWAVs are in effect a collection of
+  shorter (~75s) files.
+
+  Args:
+    filename: Passed through to ClipMetadata.
+    infile: Seekable file-like object in any audio format supported by
+      soundfile. Optional XWAV headers will be used to populate
+      ClipMetadata.start_utc.
+    readable_file: File handle of the type supplied by Beam.
+    clip_duration: The desired length of each clip. When this does not evenly
+      divide the duration of a subchunk (or whole file in the non-XWAV case),
+      the remaining audio will be discarded.
+  """
+  try:
+    infile.seek(0)
+    xwav_reader = xwav.Reader(infile)
+    sample_rate = xwav_reader.header.fmt_chunk.sample_rate
+    clip_duration_samples = np.round(clip_duration.total_seconds() *
+                                     sample_rate).astype(int)
+    hop = clip_duration_samples
+
+    # For ClipMetadata.start_relative_to_file, because clips may not exactly
+    # fill the subchunk, we need to increment the subchunk start relative to
+    # the file in an outer loop over subchunks.
+    subchunk_rel_file = datetime.timedelta(seconds=0)
+
+    clip_index_in_file = 0
+    for subchunk, samples in xwav_reader:
+      subchunk_duration_samples = samples.shape[0]
+      for begin, end in zip(
+          range(0, subchunk_duration_samples, hop),
+          range(clip_duration_samples, subchunk_duration_samples, hop)):
+        clip_rel_subchunk = datetime.timedelta(seconds=begin / sample_rate)
+        clip_metadata = ClipMetadata(
+            filename=filename,
+            sample_rate=sample_rate,
+            duration=clip_duration,
+            index_in_file=clip_index_in_file,
+            start_relative_to_file=(subchunk_rel_file + clip_rel_subchunk),
+            start_utc=(subchunk.time + clip_rel_subchunk),
+        )
+        clip_samples = samples[:, begin:end]
+        yield (clip_metadata, clip_samples)
+        clip_index_in_file += 1
+      subchunk_rel_file += datetime.timedelta(
+          seconds=subchunk_duration_samples / sample_rate)
+  except xwav.Error:
+    infile.seek(0)
+    reader = soundfile.SoundFile(infile)
+    sample_rate = reader.samplerate
+    clip_duration_samples = np.round(clip_duration.total_seconds() *
+                                     sample_rate).astype(int)
+    hop = clip_duration_samples
+
+    clip_index_in_file = 0
+    while reader.tell() + clip_duration_samples < reader.frames:
+      clip_rel_file = datetime.timedelta(seconds=reader.tell() /
+                                         reader.samplerate)
+      clip_metadata = ClipMetadata(
+          filename=filename,
+          sample_rate=sample_rate,
+          duration=clip_duration,
+          index_in_file=clip_index_in_file,
+          start_relative_to_file=clip_rel_file,
+          start_utc=None,
       )
-      yield (row['filename'], annotation)
+      clip_samples = reader.read(
+          clip_duration_samples, dtype='int16', always_2d=True)
+      yield (clip_metadata, clip_samples)
+      clip_index_in_file += 1
 
 
-def make_audio_examples(keyed_join_result: Tuple[str, JoinResult],
-                        clip_duration_seconds=10.0,
-                        resample_rate=16000) -> Iterable[tf.train.Example]:
+def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
+                  sample_rate: int, channel: int,
+                  annotations: Iterable[Annotation]) -> tf.train.Example:
+  """Constructs a TensorFlow Example with labeled audio.
+
+  Args:
+    clip_metadata: Passed through to multiple features: 'filename' bytes feature
+      with the full path to the source audio file, for reference;
+      'start_relative_to_file' float feature scalar with the offset of waveform
+      from the start of the file; 'start_utc' float feature with seconds since
+      the UNIX epoch until the start of waveform, missing when the original data
+      does not provide timestamps.
+    waveform: 'audio_raw_pcm16' bytes feature with this raw, 16-bit,
+      little-endian PCM audio.
+    sample_rate: 'sample_rate' float feature scalar with the sample rate for
+      waveform. When the waveform has been resampled, this will not match
+      clip_metadata.sample_rate, which pertains to the original file.
+    channel: 'channel' int64 feature indicates the channel index from the source
+      audio.
+    annotations: 'annotation_begin', 'annotation_end', and 'annotation_label'
+      features are parallel arrays, with each entry corresponding to one of
+      these given annotations.
+
+  Returns:
+    A TensorFlow Example with features as documented in the Args section.
+  """
+  example = tf.train.Example()
+  features = example.features.feature
+
+  features[dataset.Features.AUDIO.value.name].bytes_list.value.append(
+      waveform.astype('<i2').tobytes())
+  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(
+      clip_metadata.sample_rate)
+  features[dataset.Features.CHANNEL.value.name].int64_list.value.append(channel)
+
+  features[dataset.Features.FILENAME.value.name].bytes_list.value.append(
+      clip_metadata.filename.encode())
+  features[dataset.Features.START_RELATIVE_TO_FILE.value
+           .name].float_list.value.append(
+               clip_metadata.start_relative_to_file.total_seconds())
+  if clip_metadata.start_utc:
+    features[dataset.Features.START_UTC.value.name].float_list.value.append(
+        clip_metadata.start_utc.replace(
+            tzinfo=datetime.timezone.utc).timestamp())
+
+  for annotation in annotations:
+    features[
+        dataset.Features.ANNOTATION_BEGIN.value.name].float_list.value.append(
+            annotation.begin.total_seconds())
+    features[
+        dataset.Features.ANNOTATION_END.value.name].float_list.value.append(
+            annotation.end.total_seconds())
+    features[
+        dataset.Features.ANNOTATION_LABEL.value.name].bytes_list.value.append(
+            annotation.label.encode())
+
+  return example
+
+
+def make_audio_examples(
+    keyed_join_result: Tuple[str, JoinResult],
+    clip_duration: datetime.timedelta,
+    resample_rate: int = 16000) -> Iterable[tf.train.Example]:
   """Converts audio/annotation join to TensorFlow Examples.
 
-  This is the core audio processing method of this pipeline. Given a join of
-  exactly one audio stream to zero or more annotations, it reads the audio
-  stream one clip at a time, expresses the endpoints of the annotations for that
-  clip as seconds relative to the clip start, and emits the labeled clip as a
-  TensorFlow Example.
+  This is the core method of this pipeline. Given a join of exactly one audio
+  stream to zero or more annotations, it reads the audio stream one clip at a
+  time, expresses the endpoints of the annotations for that clip as seconds
+  relative to the clip start, and emits the labeled clip as a TensorFlow
+  Example.
 
   Args:
     keyed_join_result: A pair of a fully-qualified path to an audio file and a
@@ -415,8 +507,8 @@ def make_audio_examples(keyed_join_result: Tuple[str, JoinResult],
       :py:mod:`soundfile`. The 'annotations' key maps to zero or more Annotation
       objects corresponding to the same fully-qualified path as the audio
       stream.
-    clip_duration_seconds: The intended duration of the audio clip in each
-      emitted Example.
+    clip_duration: The intended duration of the audio clip in each emitted
+      Example.
     resample_rate: Sample rate for the audio in the emitted Examples. The input
       audio stream will be resampled if the sample rate does not match.
 
@@ -425,54 +517,61 @@ def make_audio_examples(keyed_join_result: Tuple[str, JoinResult],
     these Examples, see :py:func:`audio_example`.
   """
   filename, join_result = keyed_join_result
-  del filename  # not needed. We get it from readable_file instead.
+  del filename  # Trust readable_file more.
 
   readable_file = _only_element(join_result['audio'])
   if not readable_file:
     beam.metrics.Metrics.counter('examplegen', 'audio_file_not_found').inc()
     return
+  filename = readable_file.metadata.path
 
-  annotations_tree = intervaltree.IntervalTree()
+  file_annotations_tree = intervaltree.IntervalTree()
+  utc_annotations_tree = intervaltree.IntervalTree()
   for annotation in join_result['annotations']:
-    annotations_tree[annotation.begin:annotation.end] = annotation
+    if isinstance(annotation, UTCAnnotation):
+      utc_annotations_tree[annotation.begin:annotation.end] = annotation
+    elif isinstance(annotation, FileAnnotation):
+      file_annotations_tree[annotation.begin:annotation.end] = annotation
+    else:
+      beam.metrics.Metrics.counter('examplegen',
+                                   'annotation_type_unknown').inc()
+      continue
 
   with readable_file.open() as infile:
-    reader = soundfile.SoundFile(infile)
-    clip_duration_samples = np.round(clip_duration_seconds *
-                                     reader.samplerate).astype(int)
-    while reader.tell() + clip_duration_samples < reader.frames:
-      offset_seconds = reader.tell() / reader.samplerate
-      pcm_audio = resampy.resample(
-          reader.read(clip_duration_samples, dtype='int16', always_2d=True),
-          reader.samplerate,
-          resample_rate,
-          axis=0,
-      )
+    for clip_metadata, clip_samples in generate_clips(filename, infile,
+                                                      clip_duration):
+      if np.round(clip_metadata.sample_rate) == np.round(resample_rate):
+        pcm_audio = clip_samples
+      else:
+        pcm_audio = resampy.resample(
+            clip_samples,
+            clip_metadata.sample_rate,
+            resample_rate,
+            axis=0,
+        )
 
-      annotations_relative_to_clip = []
-
-      clip_begin = datetime.timedelta(seconds=offset_seconds)
-      clip_end = clip_begin + datetime.timedelta(seconds=clip_duration_seconds)
-
-      for interval in annotations_tree[clip_begin:clip_end]:
+      intervals = file_annotations_tree[clip_metadata.start_relative_to_file:(
+          clip_metadata.start_relative_to_file + clip_metadata.duration)]
+      if clip_metadata.start_utc:
+        intervals = itertools.chain(
+            intervals, utc_annotations_tree[clip_metadata.start_utc:(
+                clip_metadata.start_utc + clip_metadata.duration)])
+      clip_annotations = []
+      for interval in intervals:
         annotation = interval.data
-        annotations_relative_to_clip.append(
-            FileAnnotation(
-                begin=annotation.begin - clip_begin,
-                end=min(annotation.end - clip_begin,
-                        datetime.timedelta(seconds=clip_duration_seconds)),
-                label=annotation.label))
+        clip_annotation = annotation.make_relative(clip_metadata)
+        if clip_annotation:
+          clip_annotations.append(clip_annotation)
 
-      for channel in range(reader.channels):
+      for channel, waveform in enumerate(pcm_audio.T):
         # TODO(mattharvey): Option for annotations to pertain to either or all
         # channels or a specific channel.
         yield audio_example(
-            waveform=pcm_audio[:, channel],
+            clip_metadata=clip_metadata,
+            waveform=waveform,
             sample_rate=resample_rate,
-            annotations=annotations_relative_to_clip,
-            filename=readable_file.metadata.path,
             channel=channel,
-            offset_seconds=offset_seconds,
+            annotations=clip_annotations,
         )
 
 
@@ -500,7 +599,8 @@ def run(configuration: Configuration,
   """
   bind_make_audio_examples = functools.partial(
       make_audio_examples,
-      clip_duration_seconds=configuration.clip_duration_seconds,
+      clip_duration=datetime.timedelta(
+          seconds=configuration.clip_duration_seconds),
       resample_rate=configuration.resample_rate,
   )
 
@@ -525,7 +625,7 @@ def run(configuration: Configuration,
     examples = labeled_streams | 'MakeExample' >> beam.FlatMap(
         bind_make_audio_examples)
     # To make sure training examples within a batch are as close as possible to
-    # being independent, order them randomly.
+    # being independent, shuffle at the level of the entire pipeline run.
     examples = examples | beam.Reshuffle()
     _ = examples | 'WriteRecords' >> beam.io.tfrecordio.WriteToTFRecord(
         os.path.join(configuration.output_directory, 'tfrecords'),
