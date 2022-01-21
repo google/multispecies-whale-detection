@@ -5,6 +5,9 @@ neural network to detect whale vocalizations and classify them across several
 species and geographies. We release the code in the hope that it will allow
 other groups to more easily develop species detection models on their own data.
 
+This is not an officially supported Google product. Support and/or new releases
+may be limited.
+
 ## Example Generator (examplegen)
 
 A Beam pipeline for creating trainer input from a collection of labeled audio
@@ -16,7 +19,7 @@ but is often much longer than the ideal length of individual training examples.
 Annotations, which are the source of labeled data for training, are usually
 stored as CSV, but the format of this also varies across datasets.
 
-The *examplgen* Beam pipeline reads audio files and CSV label and metadata files
+The *examplegen* Beam pipeline reads audio files and CSV label and metadata files
 from a filesystem and writes TFRecord files to be consumed by the training job.
 In the process, it:
 
