@@ -13,11 +13,17 @@ may be limited.
 A Beam pipeline for creating trainer input from a collection of labeled audio
 files.
 
+### Motivation
+
 Acoustic monitoring datasets are normally stored as a collection of audio files
 on a filesystem. The duration of the files varies across and within deployments
 but is often much longer than the ideal length of individual training examples.
-Annotations, which are the source of labeled data for training, are usually
-stored as CSV, but the format of this also varies across datasets.
+Sample rate, audio encoding, and number of channels also vary, while the trainer
+will require a single input format for audio and annotations.  Annotations,
+which are the source of labeled data for training, are usually stored as CSV,
+but the naming and meaning of columns also varies.
+
+### Features
 
 The *examplegen* Beam pipeline reads audio files and CSV label and metadata files
 from a filesystem and writes TFRecord files to be consumed by the training job.
@@ -32,10 +38,12 @@ In the process, it:
     each example
 *   serializes the joined records in tensorflow.Example format
 
-Usage (local):
+### Usage
+
+Local:
 1.  Run `python3 run_examplegen_local.py`
 
-Usage (on Google Cloud Dataflow):
+Google Cloud Dataflow:
 
 1.  Edit run\_examplegen.py, setting the project and bucket paths for your
     own Cloud project or switching to a different Beam runner.
