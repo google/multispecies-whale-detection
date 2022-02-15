@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Example Generator Pipeline.
 
 The run method implements a Beam pipeline that generates TFRecord files for
@@ -395,16 +394,16 @@ def generate_clips(
     Pairs of clip metadata and NumPy arrays of audio of shape
       (samples, channels).
   """
-  # TODO(mattharvey): Add the ability to specify hop size as a field of
-  # examplegen.Configuration and pass that field, or perhaps the whole
-  # Configuration, through to here.
-  hop = clip_duration_samples
   try:
     infile.seek(0)
     xwav_reader = xwav.Reader(infile)
     sample_rate = xwav_reader.header.fmt_chunk.sample_rate
     clip_duration_samples = np.round(clip_duration.total_seconds() *
                                      sample_rate).astype(int)
+    # TODO(mattharvey): Add the ability to specify hop size as a field of
+    # examplegen.Configuration and pass that field, or perhaps the whole
+    # Configuration, through to here.
+    hop = clip_duration_samples
 
     # For ClipMetadata.start_relative_to_file, because clips may not exactly
     # fill the subchunk, we need to increment the subchunk start relative to
@@ -444,7 +443,9 @@ def generate_clips(
     clip_duration_samples = np.round(clip_duration.total_seconds() *
                                      sample_rate).astype(int)
 
-    del hop  # SoundFile read defaults to continuing where it left off.
+    # SoundFile read defaults to continuing where it left off, implying that the
+    # hop is always exactly the duration of the context window in this, the
+    # non-XWAV case.
     clip_index_in_file = 0
     while reader.tell() + clip_duration_samples < reader.frames:
       clip_rel_file = datetime.timedelta(seconds=reader.tell() /
