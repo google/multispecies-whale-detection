@@ -444,7 +444,7 @@ def generate_clips(
                                      sample_rate).astype(int)
 
     # SoundFile read defaults to continuing where it left off, implying that the
-    # hop is always be exactly the duration of the context window in this, the
+    # hop is always exactly the duration of the context window in this, the
     # non-XWAV case.
     clip_index_in_file = 0
     while reader.tell() + clip_duration_samples < reader.frames:
