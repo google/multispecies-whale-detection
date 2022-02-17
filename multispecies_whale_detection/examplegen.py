@@ -614,6 +614,7 @@ def make_audio_examples(
       for channel, waveform in enumerate(pcm_audio.T):
         # TODO(mattharvey): Option for annotations to pertain to either or all
         # channels or a specific channel.
+        beam.metrics.Metrics.counter('examplegen', 'examples-generated').inc()
         yield audio_example(
             clip_metadata=clip_metadata,
             waveform=waveform,
@@ -652,8 +653,8 @@ def run(configuration: Configuration,
       resample_rate=configuration.resample_rate,
   )
 
-  with beam.Pipeline(options=options) as pipeline_root:
-    all_files = pipeline_root | 'ListFiles' >> fileio.MatchFiles(
+  with beam.Pipeline(options=options) as pipeline:
+    all_files = pipeline | 'ListFiles' >> fileio.MatchFiles(
         configuration.input_directory + '/**')
     audio_files = all_files | 'MatchAudio' >> extension_filter(
         {'.wav', '.flac'})
@@ -682,3 +683,5 @@ def run(configuration: Configuration,
     # TODO(mattharvey): Implement customized text formatting for metadata.csv.
     _ = audio_files | 'WriteListing' >> beam.io.textio.WriteToText(
         os.path.join(configuration.output_directory, 'audio_files'))
+
+    return pipeline.run()

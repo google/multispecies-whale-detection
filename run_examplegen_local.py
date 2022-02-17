@@ -45,8 +45,11 @@ def run():
   )
 
   options = pipeline_options.PipelineOptions(runner='DirectRunner',)
+  result = examplegen.run(configuration, options)
 
-  examplegen.run(configuration, options)
+  metrics = result.metrics().query()
+  for counter in metrics['counters']:
+    print(counter)
 
 
 if __name__ == '__main__':
