@@ -495,8 +495,7 @@ def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
 
   features[dataset.Features.AUDIO.value.name].bytes_list.value.append(
       waveform.astype('<i2').tobytes())
-  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(
-      clip_metadata.sample_rate)
+  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(sample_rate)
   features[dataset.Features.CHANNEL.value.name].int64_list.value.append(channel)
 
   features[dataset.Features.FILENAME.value.name].bytes_list.value.append(
