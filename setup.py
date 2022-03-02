@@ -97,6 +97,7 @@ setuptools.setup(
         'resampy',
         'soundfile',
         'tensorflow',
+        'tensorflow_probability',
         # not a direct dependency, but beam.io.tfrecordio asks for this to be as
         # "fast as it could be"
         'python-snappy',
