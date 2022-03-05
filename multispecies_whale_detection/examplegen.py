@@ -212,10 +212,11 @@ class FileAnnotation(Annotation):
         self.end - clip_metadata.start_relative_to_file,
         clip_metadata,
     )
-    if not endpoints:
+    if endpoints:
+      begin, end = endpoints
+      return ClipAnnotation(begin=begin, end=end, label=self.label)
+    else:
       return None
-    begin, end = endpoints
-    return ClipAnnotation(begin=begin, end=end, label=self.label)
 
 
 @dataclass
