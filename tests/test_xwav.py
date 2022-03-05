@@ -359,10 +359,6 @@ class TestXwav(unittest.TestCase):
     )
 
     write_output.seek(0)
-    with open('debug', 'wb') as outfile:
-      shutil.copyfileobj(write_output, outfile)
-
-    write_output.seek(0)
     rereader = xwav.Reader(write_output)
     self.reader_reads_two_chunk_fixture_template(rereader)
 

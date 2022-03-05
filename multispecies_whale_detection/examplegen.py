@@ -207,11 +207,14 @@ class FileAnnotation(Annotation):
     Returns:
       An annotation relative to the given clip or None if there is no overlap.
     """
-    begin, end = _restrict_to_clip(
+    endpoints = _restrict_to_clip(
         self.begin - clip_metadata.start_relative_to_file,
         self.end - clip_metadata.start_relative_to_file,
         clip_metadata,
     )
+    if not endpoints:
+      return None
+    begin, end = endpoints
     return ClipAnnotation(begin=begin, end=end, label=self.label)
 
 
@@ -244,12 +247,16 @@ class UTCAnnotation(Annotation):
     Raises:
       ValueError if clip_metadata.start_utc is None.
     """
-    begin, end = _restrict_to_clip(
+    endpoints = _restrict_to_clip(
         self.begin - clip_metadata.start_utc,
         self.end - clip_metadata.start_utc,
         clip_metadata,
     )
-    return ClipAnnotation(begin=begin, end=end, label=self.label)
+    if endpoints:
+      begin, end = endpoints
+      return ClipAnnotation(begin=begin, end=end, label=self.label)
+    else:
+      return None
 
 
 # Type of the values for the CoGroupByKey (filename) done by this pipeline.

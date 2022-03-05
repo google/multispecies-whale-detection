@@ -33,8 +33,7 @@ def relative_endpoints_to_file_annotation_fixture(
     end_seconds: Ending of the test FileAnnotation relative to the file.
 
   Returns:
-    Endpoints relative to the clip, as
-    :py::meth:`examplegen.FileAnnotation.relative_endpoints`.
+    Endpoints relative to the clip.
   """
   start_relative_to_file = datetime.timedelta(seconds=20)
 
@@ -51,7 +50,11 @@ def relative_endpoints_to_file_annotation_fixture(
       end=datetime.timedelta(seconds=end_seconds),
       label='Oo',
   )
-  return annotation.relative_endpoints(clip_metadata)
+  clip_annotation = annotation.make_relative(clip_metadata)
+  if clip_annotation:
+    return clip_annotation.begin, clip_annotation.end
+  else:
+    return None
 
 
 def relative_endpoints_to_utc_annotation_fixture(
@@ -70,8 +73,7 @@ def relative_endpoints_to_utc_annotation_fixture(
     end_seconds: Ending of the test UTCAnnotation relative to the file.
 
   Returns:
-    Endpoints relative to the clip, as
-    :py::meth:`examplegen.FileAnnotation.relative_endpoints`.
+    Endpoints relative to the clip.
   """
   file_start_utc = datetime.datetime(2012, 2, 3, 11, 45, 20, tzinfo=tz.UTC)
   start_relative_to_file = datetime.timedelta(seconds=20)
@@ -89,7 +91,11 @@ def relative_endpoints_to_utc_annotation_fixture(
       end=file_start_utc + datetime.timedelta(seconds=end_seconds),
       label='Oo',
   )
-  return annotation.relative_endpoints(clip_metadata)
+  clip_annotation = annotation.make_relative(clip_metadata)
+  if clip_annotation:
+    return clip_annotation.begin, clip_annotation.end
+  else:
+    return None
 
 
 class TestAnnotations(unittest.TestCase):
