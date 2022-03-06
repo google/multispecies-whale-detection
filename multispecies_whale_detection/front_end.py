@@ -13,6 +13,8 @@
 # limitations under the License.
 """Ops for signal processing that prepares neural network input."""
 import dataclasses
+import enum
+from typing import Optional
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -27,8 +29,33 @@ def db_to_amplitude_ratio(x):
 
 
 @dataclasses.dataclass(frozen=True)
-class FrontEndConfig:
-  """Configuration data object for the FrontEnd Keras layer."""
+class NoiseFloorConfig:
+  """Parameters for subtracting estimated noise floors from each STFT row.
+
+  This equalizes overall levels and frequency responses and is useful for
+  datasets where these are inconsistent.
+  """
+
+  percentile: float = 5.0
+  """Percentile of values in a frequency bin to deem the noise floor."""
+  smoother_extent_hz: Optional[float] = 20.0
+  """Scale of average pooling over frequency done before taking percentile.
+
+  Narrowband signals lasting for a large fraction of the context window can have
+  high amplitude at a percentile that is suitable for other bands, resulting in
+  too much attenuation in the band with the signal. Averaging over nearby bands
+  before taking the percentile can mitigate this effect.
+  """
+
+
+@dataclasses.dataclass(frozen=True)
+class SpectrogramConfig:
+  """Configuration data object for the Spectrogram Keras layer.
+
+  The default values for attributes related to time scale differ significantly
+  from those conventionally used for speech. It is recommended that the caller
+  verify whether they are appropriate for each particular use case.
+  """
 
   sample_rate: int = 2000
   """Sample rate of the input waveform."""
@@ -41,30 +68,11 @@ class FrontEndConfig:
   lower_bound_hz: float = 8.0
   """Frequency below which the spectrogram should be truncated.
 
-  This is inteded as a way of ignoring low-frequency noise.
+  This is intended as a way of ignoring low-frequency noise.
   """
 
-  per_channel_normalization: bool = False
-  """Whether to subtract estimated noise floors from each STFT row.
-
-  This equalizes overall levels and frequency responses and is useful for
-  datasets where these are inconsistent.
-  """
-  noise_floor_percentile: float = 5.0
-  """Percentile of magnitudes in a row which will be deemed the noise floor.
-
-  Only relevant with per_channel_normalization enabled.
-  """
-  smoother_extent_hz: float = 20.0
-  """Size of average pooling filter applied in noise floor estimation.
-
-  Narrowband signals lasting for a large fraction of the context window can have
-  high amplitude at a noise_floor_percentile that is suitable for other bands,
-  resulting in overattenuation in the narrow band with the signal. This averages
-  over nearby bands to mitigate this effect.
-
-  Only relevant with per_channel_normalization enabled.
-  """
+  normalization: Optional[NoiseFloorConfig] = None
+  """Type of and parameters for the normalization strategy."""
 
 
 def spectrogram(
@@ -98,12 +106,49 @@ def spectrogram(
   return tf.abs(stft)
 
 
-class FrontEnd(tf.keras.layers.Layer):
+def _subtract_noise_floor(sgram: tf.Tensor, config: NoiseFloorConfig,
+                          hz_per_bin: float) -> tf.Tensor:
+  """Subtracts an estimated noise floor from a spectrogram.
+
+  See :py:class:`NoiseFloorConfig` for how the estimate is made.
+
+  Args:
+    sgram: Batch of spectrograms of shape [N, T, F] or single spectrogram of
+      shape [T, F].
+    config: Parameters for estimating the noise floor.
+    hz_per_bin: Frequency resolution of sgram.
+
+  Returns:
+    Spectrogram of the same shape as the input with an estimated noise level
+    subtracted from each frequency band.
+  """
+  if config.smoother_extent_hz:
+    smoother_len = int(config.smoother_extent_hz / hz_per_bin)
+    is_batch = sgram.shape.rank > 2
+    if is_batch:
+      smoother_input = sgram
+    else:
+      smoother_input = tf.expand_dims(sgram, 0)
+    smoothed = tf.squeeze(
+        tf.nn.avg_pool2d(
+            tf.expand_dims(smoother_input, -1), [1, smoother_len], 1, 'SAME'),
+        -1)
+    if not is_batch:
+      smoothed = tf.squeeze(smoothed, 0)
+    floor_input = smoothed
+  else:
+    floor_input = sgram
+  floor = tfp.stats.percentile(
+      floor_input, config.percentile, axis=1, keepdims=True)
+  return sgram - floor
+
+
+class Spectrogram(tf.keras.layers.Layer):
   """Converts audio from waveform to spectrogram.
 
   This layer simplifies building a Keras model that takes a raw waveform as
   input and passes it to a CNN. It is initialized with a configuration data
-  object, FrontEndConfig, which collects commonly used fixed parameters.
+  object, SpectrogramConfig, which collects commonly used fixed parameters.
 
   The frequency scale is always linear. (A future version will add mel frequency
   scaling.)
@@ -117,18 +162,14 @@ class FrontEnd(tf.keras.layers.Layer):
     """Initializes this layer.
 
     Args:
-      config:
+      config: Data structure of parameters that can be used to tune the
+        spectrogram to different time scales, distances to source, level
+        variability across endpoints, etc.
     """
-    super(FrontEnd, self).__init__()
+    super(Spectrogram, self).__init__()
     if not config:
-      config = FrontEndConfig()
+      config = SpectrogramConfig()
     self._config = config
-
-  def get_config(self):
-    """Implements Layer.get_config."""
-    config = super().get_config()
-    config.update(dataclasses.asdict(self._config))
-    return config
 
   def call(self, waveform, training=False):
     sample_rate = self._config.sample_rate
@@ -142,26 +183,34 @@ class FrontEnd(tf.keras.layers.Layer):
 
     db = amplitude_ratio_to_db(magnitude + self._config.log_stabilizer)
 
-    if self._config.per_channel_normalization:
+    normalization = self._config.normalization
+    if not normalization:
       sgram = db
-      smoother_len = int(self._config.smoother_extent_hz / hz_per_bin)
-      if smoother_len > 0:
-        if sgram.shape.rank == 2:
-          smoother_input = tf.expand_dims(sgram, 0)
-        smoothed = tf.squeeze(
-            tf.nn.avg_pool2d(
-                tf.expand_dims(smoother_input, -1), [1, smoother_len], 1,
-                'SAME'), -1)
-        if sgram.shape.rank == 2:
-          smoothed = tf.squeeze(smoothed, 0)
-      else:
-        smoothed = sgram
-      floor = tfp.stats.percentile(
-          smoothed, self._config.noise_floor_percentile, axis=1, keepdims=True)
-      sgram = sgram - floor
+    elif isinstance(normalization, NoiseFloorConfig):
+      sgram = _subtract_noise_floor(db, normalization, hz_per_bin)
     else:
-      sgram = db
+      raise TypeError(f'unknown normalization type {type(normalization)}')
 
     sgram = sgram[..., int(self._config.lower_bound_hz / hz_per_bin):]
 
     return sgram
+
+  def get_config(self):
+    """Implements Layer.get_config."""
+    config = dataclasses.asdict(self._config)
+    normalization = self._config.normalization
+    if normalization:
+      config.update(normalization_type=normalization.__class__.__name__)
+    return config
+
+  @classmethod
+  def from_config(cls, config):
+    """Implements Layer.from_config."""
+    normalization_config = config.pop('normalization', None)
+    if normalization_config:
+      normalization_class = globals()[config.pop('normalization_type')]
+      normalization = normalization_class(**normalization_config)
+      del normalization_class
+    else:
+      normalization = None
+    return cls(SpectrogramConfig(normalization=normalization, **config))
