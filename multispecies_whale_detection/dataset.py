@@ -100,7 +100,7 @@ def new(tfrecord_filepattern: str):
 
 def _extract_waveform_window(
     features: FeaturesType,
-    start_seconds: float,
+    start: float,
     duration: float,
 ) -> Optional[tf.Tensor]:
   """Waveform subroutine for extract_window."""
@@ -109,7 +109,7 @@ def _extract_waveform_window(
   except KeyError:
     return None
   sample_rate = tf.cast(features[Features.SAMPLE_RATE.value.name], tf.float32)
-  start_sample = tf.cast(tf.math.floor(sample_rate * start_seconds), tf.int32)
+  start_sample = tf.cast(tf.math.floor(sample_rate * start), tf.int32)
   # Note that a using a fixed duration rather than an unconstrained [begin,
   # end] avoids flakiness due to float rounding errors.
   duration_samples = tf.cast(tf.math.floor(sample_rate * duration), tf.int32)
@@ -118,7 +118,7 @@ def _extract_waveform_window(
   return waveform[start_sample:start_sample + duration_samples]
 
 
-def _extract_labels_window(features: FeaturesType, start_seconds: float,
+def _extract_labels_window(features: FeaturesType, start: float,
                            duration: float, class_names: Sequence[str],
                            min_overlap: float) -> tf.Tensor:
   """Labels subroutine for extract_window."""
@@ -134,11 +134,11 @@ def _extract_labels_window(features: FeaturesType, start_seconds: float,
 
   # Creates a Boolean indicator for whether [begin, end] overlaps each
   # annotation interval on the longer segment.
-  end_seconds = start_seconds + duration
-  overlap_indicator = ((start_seconds <= annotation_end - min_overlap) &
-                       (end_seconds >= annotation_begin + min_overlap))
+  end = start + duration
+  overlap_indicator = ((start <= annotation_end - min_overlap) &
+                       (end >= annotation_begin + min_overlap))
   # Creates a matrix where rows correspond to annotation intervals overlapping
-  # this context window. Each row has values all equal to the label of the
+  # this window. Each row has values all equal to the label of the
   # annotation for that row.
   classes_present = tf.reshape(
       tf.boolean_mask(annotation_label, overlap_indicator), [-1, 1])
@@ -154,26 +154,25 @@ def _extract_labels_window(features: FeaturesType, start_seconds: float,
   # Compares the above two matrices to get multi-label binary indicators, in
   # rows attributable to the corresponding annotations.
   indicators = (tiled_classes_present == tiled_classes_to_compare)
-  # Aggregates such that the context window is labeled positive for any
+  # Aggregates such that the window is labeled positive for any
   # classes that were labels of any overlapping annotation interval.
   return tf.cast(tf.reduce_any(indicators, axis=0), tf.float32)
 
 
 def extract_window(
     features: FeaturesType,
-    start_seconds: float,
+    start: float,
     duration: float,
     class_names: Sequence[str],
     min_overlap: float = DEFAULT_MIN_OVERLAP
 ) -> Tuple[Optional[tf.Tensor], tf.Tensor]:
-  """Extracts a context window waveform and labels from an example.
+  """Extracts a window waveform and labels from an example.
 
   This operates on single examples, not batches.
 
   The labels are converted from the sparse form in features to a Tensor of shape
   [num_classes], whose values are indicators of whether an annotation of the
-  corresponding class overlaps the interval [start_seconds, start_seconds +
-  duration].
+  corresponding class overlaps the interval [start, start + duration].
 
   A features dict missing both AUDIO and SAMPLE_RATE is supported for just
   converting labels to binary indicators pertaining to a given interval. If
@@ -187,10 +186,10 @@ def extract_window(
   Args:
     features: A dict as returned by :py:meth:`parse_fn`. It conforms to the
       schema :py:class:`Features` represents.
-    start_seconds: Beginning of the context window to extract, in seconds from
-      the start of the audio in features.
-    duration: Duration of the context window to extract, in seconds from the
-      start of the audio in features.
+    start: Beginning of the window to extract, in seconds from the start of the
+      audio in features.
+    duration: Duration of the window to extract, in seconds from the start of
+      the audio in features.
     class_names: Tensor-like of shape [num_classes] (the same shape as the
       binary class indicators this function returns).
     min_overlap: Lower bound for duration of overlap between an annotation
@@ -203,8 +202,8 @@ def extract_window(
     float32 indicators of classes on annotations overlapping the time interval
     of the waveform.
   """
-  return (_extract_waveform_window(features, start_seconds, duration),
-          _extract_labels_window(features, start_seconds, duration, class_names,
+  return (_extract_waveform_window(features, start, duration),
+          _extract_labels_window(features, start, duration, class_names,
                                  min_overlap))
 
 
@@ -219,7 +218,7 @@ class Windowing(abc.ABC):
       class_names: Sequence[str],
       min_overlap=DEFAULT_MIN_OVERLAP,
   ) -> Tuple[tf.Tensor, tf.Tensor]:
-    """Extracts labeled context windows.
+    """Extracts labeled windows.
 
     Args:
       features: Features of an audio clip as returned by :py:meth:parse_fn.
@@ -269,8 +268,8 @@ class RandomWindowing(Windowing):
 class SlidingWindowing(Windowing):
   """Windowing strategy that slides the window at a fixed hop."""
 
-  def __init__(self, hop_seconds: float) -> None:
-    self.hop_seconds = hop_seconds
+  def __init__(self, hop: float) -> None:
+    self.hop = hop
 
   def extract_windows(
       self,
@@ -282,8 +281,7 @@ class SlidingWindowing(Windowing):
     """Implements Windowing.extract_window."""
     num_hops = 1 + tf.cast(
         tf.math.floor(
-            (_audio_duration(features) - duration) / self.hop_seconds),
-        tf.int32)
+            (_audio_duration(features) - duration) / self.hop), tf.int32)
     extracted_windows = tf.TensorArray(tf.float32, size=num_hops)
     extracted_labels = tf.TensorArray(tf.float32, size=num_hops)
     begin = 0.0
@@ -293,7 +291,7 @@ class SlidingWindowing(Windowing):
                                      min_overlap)
       extracted_windows = extracted_windows.write(index, window)
       extracted_labels = extracted_labels.write(index, label)
-      begin += self.hop_seconds
+      begin += self.hop
       index += 1
     return extracted_windows.stack(), extracted_labels.stack()
 
@@ -308,7 +306,7 @@ def new_window_dataset(
   """Parallel tf.data pipeline to extract windows from TFRecords.
 
   This is intended for initializing a training set when sample_size is not None
-  and a validation or test set when hop_seconds is not None. Exactly one of the
+  and a validation or test set when hop is not None. Exactly one of the
   two must be None.
 
   Args:
@@ -319,24 +317,24 @@ def new_window_dataset(
     duration: The common duration of the waveforms this Dataset yields.
     class_names: String values expected in ANNOTATION_LABEL features, the order
       of which determined class indices in the labels this dataset yields.
-    sample_size: When set, specifies that this number of context windows with
-      random starts should be extracted from each input audio. Mutually
-      exclusive with hop_seconds.
-    hop_seconds: When set, specifies that all context windows sliding over the
-      input audio at this period - that remain in bounds - should be extracted.
-      Mutually exclusive with sample_size.
+    sample_size: When set, specifies that this number of windows with random
+      starts should be extracted from each input audio. Mutually exclusive with
+      hop.
+    hop: When set, specifies that all windows sliding over the input audio at
+      this period - that remain in bounds - should be extracted. Mutually
+      exclusive with sample_size.
     min_overlap: Lower bound on the duration of overlap between an ANNOTATION
-      feature interval and a context window for that context window to count as
-      positive for the ANNOTATION_LABEL.
+      feature interval and a window for that window to count as positive for the
+      ANNOTATION_LABEL.
 
   Returns:
-    Dataset of individual (context window waveform, label) tuples. All context
-    windows have the same fixed length, determined by context_window_seconds.
+    Dataset of individual (window waveform, label) tuples. All
+    windows have the same fixed length, determined by the duration argument.
     The labels are 0.0/1.0 indicators of whether an annotated interval for the
-    corresponding class overlaps the context window.
+    corresponding class overlaps the window.
 
   Raises:
-    ValueError: If both or neither of sample_size and hop_seconds are set.
+    ValueError: If both or neither of sample_size and hop are set.
   """
   assert isinstance(windowing, Windowing)
   window_fn = functools.partial(

@@ -178,15 +178,15 @@ class TestDataset(unittest.TestCase):
     }
     # Note that this doubles a test for the case where ANNOTATION features are
     # not provided.
-    start_seconds = 0.5
+    start = 0.5
     window_duration = 0.2
-    begin_sample = int(start_seconds * sample_rate)
+    begin_sample = int(start * sample_rate)
     end_sample = begin_sample + int(window_duration * sample_rate)
     expected_extract = waveform[begin_sample:end_sample]
 
     extract, _ = dataset.extract_window(
         features,
-        start_seconds=start_seconds,
+        start=start,
         duration=window_duration,
         class_names=CLASS_NAMES,
     )
@@ -206,7 +206,7 @@ class TestDataset(unittest.TestCase):
     # not provided.
     _, labels = dataset.extract_window(
         features,
-        start_seconds=0.0,
+        start=0.0,
         duration=3.0,
         class_names=CLASS_NAMES,
         min_overlap=0.1,
@@ -227,7 +227,7 @@ class TestDataset(unittest.TestCase):
 
     _, labels = dataset.extract_window(
         features,
-        start_seconds=1.0,
+        start=1.0,
         duration=1.0,
         class_names=CLASS_NAMES,
         min_overlap=0.1,
@@ -310,7 +310,7 @@ class TestDataset(unittest.TestCase):
     sample_rate = 200
     clip_duration = 10.0
     window_duration = 2.0
-    hop_seconds = window_duration / 2
+    hop = window_duration / 2
     waveform = _sin_waveform(
         frequency_hz=440.0,
         duration=clip_duration,
@@ -332,12 +332,11 @@ class TestDataset(unittest.TestCase):
             tf.sparse.from_dense(['Oo']),
     }
 
-    windowing = dataset.SlidingWindowing(hop_seconds)
+    windowing = dataset.SlidingWindowing(hop)
     windows, labels = windowing.extract_windows(features, window_duration,
                                                 class_names)
 
-    expected_window_count = _window_count(clip_duration, window_duration,
-                                          hop_seconds)
+    expected_window_count = _window_count(clip_duration, window_duration, hop)
     self.assertEqual(
         tf.TensorShape([expected_window_count, window_duration_samples]),
         windows.shape)
@@ -371,7 +370,7 @@ class TestDataset(unittest.TestCase):
 
   def test_new_window_dataset_sliding(self):
     window_duration = 1.0
-    hop_seconds = 0.5
+    hop = 0.5
     class_names = ['Orca', 'Offshore', 'Resident']
     examples = _integration_test_fixture_examples()
     with _temp_tfrecords(examples) as infile:
@@ -380,14 +379,14 @@ class TestDataset(unittest.TestCase):
         window_dataset = dataset.new_window_dataset(
             tfrecord_filepattern=infile.name,
             duration=window_duration,
-            windowing=dataset.SlidingWindowing(hop_seconds),
+            windowing=dataset.SlidingWindowing(hop),
             class_names=class_names,
         ).batch(batch_size)
 
         windows, labels = next(iter(window_dataset))
         example = Example()
         clip_duration = len(example.waveform) / example.sample_rate
-        num_hops = _window_count(clip_duration, window_duration, hop_seconds)
+        num_hops = _window_count(clip_duration, window_duration, hop)
         window_duration_samples = int(window_duration * Example().sample_rate)
         num_outputs = min(batch_size, num_hops)
         self.assertEqual(
