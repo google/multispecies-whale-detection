@@ -22,8 +22,8 @@ from multispecies_whale_detection import examplegen
 
 
 def relative_endpoints_to_file_annotation_fixture(
-    begin_seconds: float, end_seconds: float
-) -> Optional[Tuple[datetime.timedelta, datetime.timedelta]]:
+    begin_seconds: float,
+    end_seconds: float) -> Optional[examplegen.ClipAnnotation]:
   """Template testing FileAnnotations relative to a fixture clip.
 
   The fixture clip covers the time interval [10s, 20s] relative to the file.
@@ -33,7 +33,8 @@ def relative_endpoints_to_file_annotation_fixture(
     end_seconds: Ending of the test FileAnnotation relative to the file.
 
   Returns:
-    Endpoints relative to the clip.
+    Annotation over the restriction of the given time interval to the fixture
+    clip or None if they don't overlap.
   """
   start_relative_to_file = datetime.timedelta(seconds=20)
 
@@ -50,16 +51,12 @@ def relative_endpoints_to_file_annotation_fixture(
       end=datetime.timedelta(seconds=end_seconds),
       label='Oo',
   )
-  clip_annotation = annotation.make_relative(clip_metadata)
-  if clip_annotation:
-    return clip_annotation.begin, clip_annotation.end
-  else:
-    return None
+  return annotation.make_relative(clip_metadata)
 
 
 def relative_endpoints_to_utc_annotation_fixture(
-    begin_seconds: float, end_seconds: float
-) -> Optional[Tuple[datetime.timedelta, datetime.timedelta]]:
+    begin_seconds: float,
+    end_seconds: float) -> Optional[examplegen.ClipAnnotation]:
   """Template testing UTCAnnotations relative to a fixture clip.
 
   This is a modification of the FileAnnotation version to convert identical
@@ -73,7 +70,8 @@ def relative_endpoints_to_utc_annotation_fixture(
     end_seconds: Ending of the test UTCAnnotation relative to the file.
 
   Returns:
-    Endpoints relative to the clip.
+    Annotation over the restriction of the given time interval to the fixture
+    clip or None if they don't overlap.
   """
   file_start_utc = datetime.datetime(2012, 2, 3, 11, 45, 20, tzinfo=tz.UTC)
   start_relative_to_file = datetime.timedelta(seconds=20)
@@ -91,11 +89,7 @@ def relative_endpoints_to_utc_annotation_fixture(
       end=file_start_utc + datetime.timedelta(seconds=end_seconds),
       label='Oo',
   )
-  clip_annotation = annotation.make_relative(clip_metadata)
-  if clip_annotation:
-    return clip_annotation.begin, clip_annotation.end
-  else:
-    return None
+  return annotation.make_relative(clip_metadata)
 
 
 class TestAnnotations(unittest.TestCase):
@@ -158,9 +152,9 @@ class TestAnnotations(unittest.TestCase):
     self.assertEqual(annotation, coder.decode(encoded))
 
   def test_file_annotation_relative_endpoints_within_clip(self):
-    begin, end = relative_endpoints_to_file_annotation_fixture(22, 23.2)
-    self.assertEqual(datetime.timedelta(seconds=2), begin)
-    self.assertEqual(datetime.timedelta(seconds=3.2), end)
+    clip_annotation = relative_endpoints_to_file_annotation_fixture(22, 23.2)
+    self.assertEqual(datetime.timedelta(seconds=2), clip_annotation.begin)
+    self.assertEqual(datetime.timedelta(seconds=3.2), clip_annotation.end)
 
   def test_file_annotation_relative_endpoints_before_clip(self):
     self.assertIsNone(relative_endpoints_to_file_annotation_fixture(1.5, 2.5))
@@ -169,9 +163,9 @@ class TestAnnotations(unittest.TestCase):
     self.assertIsNone(relative_endpoints_to_file_annotation_fixture(42, 45))
 
   def test_file_annotation_relative_endpoints_overlap_begin(self):
-    begin, end = relative_endpoints_to_file_annotation_fixture(19.5, 22.1)
-    self.assertEqual(datetime.timedelta(seconds=0), begin)
-    self.assertEqual(datetime.timedelta(seconds=2.1), end)
+    clip_annotation = relative_endpoints_to_file_annotation_fixture(19.5, 22.1)
+    self.assertEqual(datetime.timedelta(seconds=0), clip_annotation.begin)
+    self.assertEqual(datetime.timedelta(seconds=2.1), clip_annotation.end)
 
   def test_round_trip_utc_annotation(self):
     begin = datetime.datetime(2012, 2, 3, 11, 45, 15, tzinfo=tz.UTC)
@@ -184,9 +178,9 @@ class TestAnnotations(unittest.TestCase):
     self.assertEqual(annotation, coder.decode(encoded))
 
   def test_utc_annotation_relative_endpoints_within_clip(self):
-    begin, end = relative_endpoints_to_utc_annotation_fixture(22, 23.2)
-    self.assertEqual(datetime.timedelta(seconds=2), begin)
-    self.assertEqual(datetime.timedelta(seconds=3.2), end)
+    clip_annotation = relative_endpoints_to_utc_annotation_fixture(22, 23.2)
+    self.assertEqual(datetime.timedelta(seconds=2), clip_annotation.begin)
+    self.assertEqual(datetime.timedelta(seconds=3.2), clip_annotation.end)
 
   def test_utc_annotation_relative_endpoints_before_clip(self):
     self.assertIsNone(relative_endpoints_to_utc_annotation_fixture(1.5, 2.5))
@@ -195,9 +189,9 @@ class TestAnnotations(unittest.TestCase):
     self.assertIsNone(relative_endpoints_to_utc_annotation_fixture(42, 45))
 
   def test_utc_annotation_relative_endpoints_overlap_begin(self):
-    begin, end = relative_endpoints_to_utc_annotation_fixture(19.5, 22.1)
-    self.assertEqual(datetime.timedelta(seconds=0), begin)
-    self.assertEqual(datetime.timedelta(seconds=2.1), end)
+    clip_annotation = relative_endpoints_to_utc_annotation_fixture(19.5, 22.1)
+    self.assertEqual(datetime.timedelta(seconds=0), clip_annotation.begin)
+    self.assertEqual(datetime.timedelta(seconds=2.1), clip_annotation.end)
 
 
 if __name__ == '__main__':

@@ -94,29 +94,6 @@ class ClipMetadata:
   start_utc: Optional[datetime.datetime]
 
 
-def _restrict_to_clip(
-    begin: datetime.timedelta, end: datetime.timedelta,
-    clip_metadata: ClipMetadata
-) -> Optional[Tuple[datetime.timedelta, datetime.timedelta]]:
-  """Restricts an interval to the duration from ClipMetadata.
-
-  Args:
-    begin: The start of the interval, relative to the clip. May be negative.
-    end: The end of the interval, relative to the clip. May be negative.
-    clip_metadata: Description of the clip.
-
-  Returns:
-    Endpoints of the interval restricted to the clip as nonnegative timedeltas
-    or None if the interval does not intersect the clip.
-  """
-  begin = max(begin, datetime.timedelta(seconds=0))
-  end = min(end, clip_metadata.duration)
-  if begin < clip_metadata.duration and end > datetime.timedelta(seconds=0):
-    return (begin, end)
-  else:
-    return None
-
-
 # to annotate a factory method
 AnnotationType = TypeVar('AnnotationType', bound='Annotation')
 
@@ -190,6 +167,33 @@ class ClipAnnotation(Annotation):
   end: datetime.timedelta
 
 
+def _restrict_to_clip(
+    begin: datetime.timedelta,
+    end: datetime.timedelta,
+    clip_metadata: ClipMetadata,
+    label: str,
+) -> Optional[ClipAnnotation]:
+  """Restricts an interval to the duration from ClipMetadata.
+
+  Args:
+    begin: The start of the interval, relative to the clip. May be negative.
+    end: The end of the interval, relative to the clip. May be negative.
+    clip_metadata: Description of the clip.
+    label: Label to set in the returned ClipAnnotation.
+
+  Returns:
+    ClipAnnotation with the intersection of (begin, end) with the clip described
+    by clip_metadata or None if that interstion is empty.
+  """
+  assert end > begin
+  begin = max(begin, datetime.timedelta(seconds=0))
+  end = min(end, clip_metadata.duration)
+  if begin < clip_metadata.duration and end > datetime.timedelta(seconds=0):
+    return ClipAnnotation(begin=begin, end=end, label=label)
+  else:
+    return None
+
+
 @dataclass
 class FileAnnotation(Annotation):
   """Annotation as time differences from the start of a file."""
@@ -207,16 +211,12 @@ class FileAnnotation(Annotation):
     Returns:
       An annotation relative to the given clip or None if there is no overlap.
     """
-    endpoints = _restrict_to_clip(
+    return _restrict_to_clip(
         self.begin - clip_metadata.start_relative_to_file,
         self.end - clip_metadata.start_relative_to_file,
         clip_metadata,
+        self.label,
     )
-    if endpoints:
-      begin, end = endpoints
-      return ClipAnnotation(begin=begin, end=end, label=self.label)
-    else:
-      return None
 
 
 @dataclass
@@ -248,16 +248,12 @@ class UTCAnnotation(Annotation):
     Raises:
       ValueError if clip_metadata.start_utc is None.
     """
-    endpoints = _restrict_to_clip(
+    return _restrict_to_clip(
         self.begin - clip_metadata.start_utc,
         self.end - clip_metadata.start_utc,
         clip_metadata,
+        self.label,
     )
-    if endpoints:
-      begin, end = endpoints
-      return ClipAnnotation(begin=begin, end=end, label=self.label)
-    else:
-      return None
 
 
 # Type of the values for the CoGroupByKey (filename) done by this pipeline.
@@ -503,7 +499,8 @@ def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
 
   features[dataset.Features.AUDIO.value.name].bytes_list.value.append(
       waveform.astype('<i2').tobytes())
-  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(sample_rate)
+  features[dataset.Features.SAMPLE_RATE.value.name].int64_list.value.append(
+      sample_rate)
   features[dataset.Features.CHANNEL.value.name].int64_list.value.append(channel)
 
   features[dataset.Features.FILENAME.value.name].bytes_list.value.append(
