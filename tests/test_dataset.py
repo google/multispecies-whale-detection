@@ -19,25 +19,26 @@ import tempfile
 from typing import Iterable
 import unittest
 
-from multispecies_whale_detection import dataset
-from multispecies_whale_detection import examplegen
 import numpy as np
 import tensorflow as tf
+
+from multispecies_whale_detection import dataset
+from multispecies_whale_detection import examplegen
 
 CLASS_NAMES = ['Bm', 'Bp', 'Be', 'Mn', 'Eg', 'Ej', 'Oo']
 """Whale genus / species codes."""
 
 
-def _window_count(clip_duration: float, context_duration: float,
+def _window_count(clip_duration: float, window_duration: float,
                   hop: float) -> int:
   """Returns the number context window hops in bounds of a clip."""
-  return int((clip_duration - context_duration) / hop) + 1
+  return int((clip_duration - window_duration) / hop) + 1
 
 
-def _sin_waveform(frequency_hz: float, duration_seconds: float,
+def _sin_waveform(frequency_hz: float, duration: float,
                   sample_rate: int) -> tf.Tensor:
   """Returns a sinusoidal waveform with the given shape parameter arguments."""
-  sample_index = tf.range(0, duration_seconds * sample_rate, dtype=tf.float32)
+  sample_index = tf.range(0, duration * sample_rate, dtype=tf.float32)
   return tf.math.sin(2 * math.pi * frequency_hz / sample_rate * sample_index)
 
 
@@ -46,11 +47,11 @@ def _waveform_contains_window(window: tf.Tensor, waveform: tf.Tensor) -> bool:
   # Slide a window of the same duration as the extracted window over the
   # original waveform and check that there exists a sample offset at which it
   # matches the extracted window.
-  duration_samples = waveform.shape[0]
-  context_duration_samples = window.shape[0]
-  num_positions = duration_samples - context_duration_samples
+  clip_duration_samples = waveform.shape[0]
+  window_duration_samples = window.shape[0]
+  num_positions = clip_duration_samples - window_duration_samples
   all_windows = tf.stack(
-      [waveform[i:i + context_duration_samples] for i in range(num_positions)])
+      [waveform[i:i + window_duration_samples] for i in range(num_positions)])
   tiled_extracted_window = tf.tile(
       tf.expand_dims(window, 0), [num_positions, 1])
   extracted_matches_row = tf.math.reduce_all(
@@ -61,6 +62,8 @@ def _waveform_contains_window(window: tf.Tensor, waveform: tf.Tensor) -> bool:
 def _temp_tfrecords(
     examples: Iterable[tf.train.Example]) -> tempfile.NamedTemporaryFile:
   """Returns a temporary TFRecord file, which serializes the given examples."""
+  # pylint: disable=consider-using-with
+  # This is a factory for the caller to use with.
   file = tempfile.NamedTemporaryFile()
   with tf.io.TFRecordWriter(file.name) as writer:
     for example in examples:
@@ -76,12 +79,12 @@ class Example:
   access to a fixture example populated with default values.
   """
   sample_rate: int = 200
-  duration_seconds: float = 10.0
+  duration: float = 10.0
 
   clip_metadata: examplegen.ClipMetadata = examplegen.ClipMetadata(
       filename='audio.wav',
       sample_rate=sample_rate,
-      duration=datetime.timedelta(seconds=duration_seconds),
+      duration=datetime.timedelta(seconds=duration),
       index_in_file=123,
       start_relative_to_file=datetime.timedelta(seconds=0.0),
       start_utc=datetime.datetime(2022, 3, 4, 22, 36, 39),
@@ -89,7 +92,7 @@ class Example:
 
   waveform: np.ndarray = (_sin_waveform(
       frequency_hz=440.0,
-      duration_seconds=duration_seconds,
+      duration=duration,
       sample_rate=sample_rate,
   ).numpy() * (np.iinfo(np.int16).max - 1)).astype(np.int16)
 
@@ -118,7 +121,7 @@ def _integration_test_fixture_examples() -> Iterable[tf.train.Example]:
 
 class TestDataset(unittest.TestCase):
 
-  def assertFeaturesMatchFixture(self, features):
+  def assert_features_match_fixture(self, features):
     fixture = Example()
 
     np.testing.assert_allclose(
@@ -150,7 +153,7 @@ class TestDataset(unittest.TestCase):
         features[dataset.Features.ANNOTATION_LABEL.value.name].values)
 
   def test_parse_fn(self):
-    self.assertFeaturesMatchFixture(
+    self.assert_features_match_fixture(
         dataset.parse_fn(
             next(iter(
                 _integration_test_fixture_examples())).SerializeToString()))
@@ -160,13 +163,13 @@ class TestDataset(unittest.TestCase):
     with _temp_tfrecords(examples) as infile:
       new_dataset = dataset.new(infile.name)
       features = next(iter(new_dataset))
-    self.assertFeaturesMatchFixture(features)
+    self.assert_features_match_fixture(features)
 
   def test_extract_window_waveform(self):
     sample_rate = 2000
     waveform = _sin_waveform(
         frequency_hz=440.0,
-        duration_seconds=2.0,
+        duration=2.0,
         sample_rate=sample_rate,
     )
     features = {
@@ -176,15 +179,15 @@ class TestDataset(unittest.TestCase):
     # Note that this doubles a test for the case where ANNOTATION features are
     # not provided.
     start_seconds = 0.5
-    duration_seconds = 0.2
+    window_duration = 0.2
     begin_sample = int(start_seconds * sample_rate)
-    end_sample = begin_sample + int(duration_seconds * sample_rate)
+    end_sample = begin_sample + int(window_duration * sample_rate)
     expected_extract = waveform[begin_sample:end_sample]
 
     extract, _ = dataset.extract_window(
         features,
         start_seconds=start_seconds,
-        duration_seconds=duration_seconds,
+        duration=window_duration,
         class_names=CLASS_NAMES,
     )
 
@@ -204,7 +207,7 @@ class TestDataset(unittest.TestCase):
     _, labels = dataset.extract_window(
         features,
         start_seconds=0.0,
-        duration_seconds=3.0,
+        duration=3.0,
         class_names=CLASS_NAMES,
         min_overlap=0.1,
     )
@@ -225,7 +228,7 @@ class TestDataset(unittest.TestCase):
     _, labels = dataset.extract_window(
         features,
         start_seconds=1.0,
-        duration_seconds=1.0,
+        duration=1.0,
         class_names=CLASS_NAMES,
         min_overlap=0.1,
     )
@@ -235,14 +238,14 @@ class TestDataset(unittest.TestCase):
 
   def test_single_random_window(self):
     sample_rate = 200
+    window_duration = 1.0
     # This will extract a single window from a clip slightly longer than the
     # extracted window, so that a label interval in the middle is guaranteed to
     # overlap.
-    context_duration_seconds = 1.0
-    duration_seconds = (context_duration_seconds + 0.1)
+    clip_duration = window_duration + 0.1
     waveform = _sin_waveform(
         frequency_hz=440.0,
-        duration_seconds=duration_seconds,
+        duration=clip_duration,
         sample_rate=sample_rate,
     )
     sample_size = 1
@@ -260,16 +263,16 @@ class TestDataset(unittest.TestCase):
             tf.sparse.from_dense(['Bm']),
     }
 
-    windows, labels = dataset.random_windows(
+    windowing = dataset.RandomWindowing(sample_size)
+    windows, labels = windowing.extract_windows(
         features,
-        context_duration_seconds,
-        sample_size=sample_size,
+        window_duration,
         class_names=class_names,
     )
 
-    context_duration_samples = int(sample_rate * context_duration_seconds)
+    window_duration_samples = int(sample_rate * window_duration)
     self.assertEqual(
-        tf.TensorShape([sample_size, context_duration_samples]), windows.shape)
+        tf.TensorShape([sample_size, window_duration_samples]), windows.shape)
     self.assertEqual(
         tf.TensorShape([sample_size, len(class_names)]), labels.shape)
     self.assertTrue(tf.math.reduce_all([[1.0, 0.0]] == labels))
@@ -278,10 +281,10 @@ class TestDataset(unittest.TestCase):
   def test_random_windows_count(self):
     sample_size = 3
     sample_rate = 200
-    context_duration_seconds = 1.0
+    window_duration = 1.0
     waveform = _sin_waveform(
         frequency_hz=440.0,
-        duration_seconds=2.0,
+        duration=2.0,
         sample_rate=sample_rate,
     )
     features = {
@@ -290,30 +293,30 @@ class TestDataset(unittest.TestCase):
     }
     class_names = ['Oo']
 
-    windows, labels = dataset.random_windows(
+    windowing = dataset.RandomWindowing(sample_size)
+    windows, labels = windowing.extract_windows(
         features,
-        context_duration_seconds=1.0,
-        sample_size=sample_size,
+        duration=window_duration,
         class_names=class_names,
     )
 
-    context_duration_samples = int(context_duration_seconds * sample_rate)
+    window_duration_samples = int(window_duration * sample_rate)
     self.assertEqual(
-        tf.TensorShape([sample_size, context_duration_samples]), windows.shape)
+        tf.TensorShape([sample_size, window_duration_samples]), windows.shape)
     self.assertEqual(
         tf.TensorShape([sample_size, len(class_names)]), labels.shape)
 
   def test_sliding_windows(self):
     sample_rate = 200
-    duration_seconds = 10.0
-    context_duration_seconds = 2.0
-    hop_seconds = context_duration_seconds / 2
+    clip_duration = 10.0
+    window_duration = 2.0
+    hop_seconds = window_duration / 2
     waveform = _sin_waveform(
         frequency_hz=440.0,
-        duration_seconds=duration_seconds,
+        duration=clip_duration,
         sample_rate=sample_rate,
     )
-    context_duration_samples = int(sample_rate * context_duration_seconds)
+    window_duration_samples = int(sample_rate * window_duration)
     # Label that intersects windows[1] and windows[2].
     class_names = ['Oo']
     features = {
@@ -329,21 +332,21 @@ class TestDataset(unittest.TestCase):
             tf.sparse.from_dense(['Oo']),
     }
 
-    windows, labels = dataset.sliding_windows(features,
-                                              context_duration_seconds,
-                                              hop_seconds, class_names)
+    windowing = dataset.SlidingWindowing(hop_seconds)
+    windows, labels = windowing.extract_windows(features, window_duration,
+                                                class_names)
 
-    expected_window_count = _window_count(duration_seconds,
-                                          context_duration_seconds, hop_seconds)
+    expected_window_count = _window_count(clip_duration, window_duration,
+                                          hop_seconds)
     self.assertEqual(
-        tf.TensorShape([expected_window_count, context_duration_samples]),
+        tf.TensorShape([expected_window_count, window_duration_samples]),
         windows.shape)
     self.assertEqual(
         tf.TensorShape([expected_window_count,
                         len(class_names)]), labels.shape)
 
   def test_new_window_dataset_random(self):
-    context_duration_seconds = 2.0
+    window_duration = 2.0
     sample_size = 3
     class_names = ['Orca', 'Offshore', 'Resident']
     examples = _integration_test_fixture_examples()
@@ -352,23 +355,22 @@ class TestDataset(unittest.TestCase):
 
         window_dataset = dataset.new_window_dataset(
             tfrecord_filepattern=infile.name,
-            context_duration_seconds=context_duration_seconds,
+            duration=window_duration,
+            windowing=dataset.RandomWindowing(sample_size),
             class_names=class_names,
-            sample_size=sample_size,
         ).batch(batch_size)
 
         windows, labels = next(iter(window_dataset))
-        context_duration_samples = int(context_duration_seconds *
-                                       Example().sample_rate)
+        window_duration_samples = int(window_duration * Example().sample_rate)
         num_outputs = min(batch_size, sample_size)
         self.assertEqual(
-            tf.TensorShape([num_outputs, context_duration_samples]),
+            tf.TensorShape([num_outputs, window_duration_samples]),
             windows.shape)
         self.assertEqual(
             tf.TensorShape([num_outputs, len(class_names)]), labels.shape)
 
   def test_new_window_dataset_sliding(self):
-    context_duration_seconds = 1.0
+    window_duration = 1.0
     hop_seconds = 0.5
     class_names = ['Orca', 'Offshore', 'Resident']
     examples = _integration_test_fixture_examples()
@@ -377,35 +379,22 @@ class TestDataset(unittest.TestCase):
       for batch_size in [2, 128]:
         window_dataset = dataset.new_window_dataset(
             tfrecord_filepattern=infile.name,
-            context_duration_seconds=context_duration_seconds,
+            duration=window_duration,
+            windowing=dataset.SlidingWindowing(hop_seconds),
             class_names=class_names,
-            hop_seconds=hop_seconds,
         ).batch(batch_size)
 
         windows, labels = next(iter(window_dataset))
         example = Example()
-        clip_duration_seconds = len(example.waveform) / example.sample_rate
-        num_hops = _window_count(clip_duration_seconds,
-                                 context_duration_seconds, hop_seconds)
-        context_duration_samples = int(context_duration_seconds *
-                                       Example().sample_rate)
+        clip_duration = len(example.waveform) / example.sample_rate
+        num_hops = _window_count(clip_duration, window_duration, hop_seconds)
+        window_duration_samples = int(window_duration * Example().sample_rate)
         num_outputs = min(batch_size, num_hops)
         self.assertEqual(
-            tf.TensorShape([num_outputs, context_duration_samples]),
+            tf.TensorShape([num_outputs, window_duration_samples]),
             windows.shape)
         self.assertEqual(
             tf.TensorShape([num_outputs, len(class_names)]), labels.shape)
-
-  def test_new_window_dataset_ambiguous(self):
-    # sample_size and hop_seconds both set raises ValueError
-    with self.assertRaises(ValueError):
-      _ = dataset.new_window_dataset(
-          tfrecord_filepattern='',
-          context_duration_seconds=1.0,
-          class_names=['A'],
-          sample_size=3,
-          hop_seconds=1.0,
-      )
 
 
 if __name__ == '__main__':
