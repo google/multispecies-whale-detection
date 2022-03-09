@@ -23,7 +23,7 @@ import tensorflow_probability as tfp
 
 class TestFrontEnd(unittest.TestCase):
 
-  def test_spectrogram_layer_on_noise(self):
+  def test_spectrogram_layer(self):
     tf.random.set_seed(3141)  # to avoid flakiness
 
     sample_rate = 2000
@@ -34,13 +34,56 @@ class TestFrontEnd(unittest.TestCase):
 
     spectrogram = layer(noise_waveform)
 
-    self.assertEqual([99, 128], spectrogram.shape)
+    self.assertEqual([99, 129], spectrogram.shape)
 
-  def test_spectrogram_layer_on_noise_with_normalization(self):
+  def test_spectrogram_layer_with_mel_scaling(self):
     tf.random.set_seed(1413)  # to avoid flakiness
 
     sample_rate = 2000
-    normalization=front_end.NoiseFloorConfig(percentile=5.0)
+    frequency_scaling = front_end.MelScalingConfig(
+        num_mel_bins=80,
+        lower_edge_hz=20.0,
+    )
+    config = front_end.SpectrogramConfig(
+        sample_rate=sample_rate,
+        frequency_scaling=frequency_scaling,
+    )
+    num_samples = sample_rate * 1
+    noise_waveform = tf.random.normal([num_samples], 0, 1e-3)
+    layer = front_end.Spectrogram(config)
+
+    spectrogram = layer(noise_waveform)
+
+    self.assertEqual(frequency_scaling.num_mel_bins, spectrogram.shape[-1])
+
+  def test_spectrogram_layer_with_cropping(self):
+    tf.random.set_seed(1413)  # to avoid flakiness
+
+    sample_rate = 2000
+    num_samples = sample_rate * 1
+    noise_waveform = tf.random.normal([num_samples], 0, 1e-3)
+    num_bins = 128
+    hz_per_bin = sample_rate / 2 / num_bins
+
+    for lower_edge_hz in [0.0, 50.0, 150.0, 500.0]:
+      frequency_scaling = front_end.CropFrequencyConfig(
+          lower_edge_hz=lower_edge_hz)
+      config = front_end.SpectrogramConfig(
+          sample_rate=sample_rate,
+          frequency_scaling=frequency_scaling,
+      )
+      layer = front_end.Spectrogram(config)
+
+      spectrogram = layer(noise_waveform)
+
+      self.assertEqual(num_bins - int(lower_edge_hz / hz_per_bin) + 1,
+                       spectrogram.shape[-1])
+
+  def test_spectrogram_layer_with_normalization(self):
+    tf.random.set_seed(1413)  # to avoid flakiness
+
+    sample_rate = 2000
+    normalization = front_end.NoiseFloorConfig(percentile=5.0)
     config = front_end.SpectrogramConfig(
         sample_rate=sample_rate,
         normalization=normalization,
@@ -78,6 +121,11 @@ class TestFrontEnd(unittest.TestCase):
     non_default_config = front_end.SpectrogramConfig(
         frame_seconds=0.025,
         hop_seconds=0.0125,
+        frequency_scaling=front_end.MelScalingConfig(
+            num_mel_bins=64,
+            lower_edge_hz=20.0,
+            upper_edge_hz=900.0,
+        ),
         normalization=front_end.NoiseFloorConfig(
             percentile=0.3,
             smoother_extent_hz=None,
