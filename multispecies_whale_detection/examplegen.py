@@ -276,8 +276,9 @@ class TimedeltaCoder(beam.coders.Coder):
 
   def decode(self, encoded):
     days, seconds, microseconds = self._tuple_coder.decode(encoded)
-    return datetime.timedelta(
-        days=days, seconds=seconds, microseconds=microseconds)
+    return datetime.timedelta(days=days,
+                              seconds=seconds,
+                              microseconds=microseconds)
 
   def is_deterministic(self):
     return True
@@ -298,8 +299,8 @@ class UTCDatetimeCoder(beam.coders.Coder):
                                      utc.minute, utc.second, utc.microsecond))
 
   def decode(self, encoded):
-    return datetime.datetime(
-        *self._tuple_coder.decode(encoded), tzinfo=datetime.timezone.utc)
+    return datetime.datetime(*self._tuple_coder.decode(encoded),
+                             tzinfo=datetime.timezone.utc)
 
 
 class AnnotationCoder(beam.coders.Coder):
@@ -462,8 +463,9 @@ def generate_clips(
           start_relative_to_file=clip_rel_file,
           start_utc=None,
       )
-      clip_samples = reader.read(
-          clip_duration_samples, dtype='int16', always_2d=True)
+      clip_samples = reader.read(clip_duration_samples,
+                                 dtype='int16',
+                                 always_2d=True)
       yield (clip_metadata, clip_samples)
       clip_index_in_file += 1
 
@@ -505,8 +507,8 @@ def audio_example(clip_metadata: ClipMetadata, waveform: np.array,
 
   features[dataset.Features.FILENAME.value.name].bytes_list.value.append(
       clip_metadata.filename.encode())
-  features[dataset.Features.START_RELATIVE_TO_FILE.value
-           .name].float_list.value.append(
+  features[dataset.Features.START_RELATIVE_TO_FILE.value.
+           name].float_list.value.append(
                clip_metadata.start_relative_to_file.total_seconds())
   if clip_metadata.start_utc:
     features[dataset.Features.START_UTC.value.name].float_list.value.append(
@@ -665,11 +667,10 @@ def run(configuration: Configuration,
     csv_files = all_files | 'MatchCsv' >> extension_filter({'.csv'})
 
     audio_streams = (
-        audio_files | 'ReadAudio' >> fileio.ReadMatches()
-        | 'KeyAudioByFilename' >> beam.Map(lambda r: (r.metadata.path, r)))
-    annotations = (
-        csv_files | 'ReadCsv' >> fileio.ReadMatches()
-        | 'ParseCsv' >> beam.ParDo(beam_read_annotations))
+        audio_files | 'ReadAudio' >> fileio.ReadMatches() |
+        'KeyAudioByFilename' >> beam.Map(lambda r: (r.metadata.path, r)))
+    annotations = (csv_files | 'ReadCsv' >> fileio.ReadMatches() |
+                   'ParseCsv' >> beam.ParDo(beam_read_annotations))
     labeled_streams = ({
         'audio': audio_streams,
         'annotations': annotations,

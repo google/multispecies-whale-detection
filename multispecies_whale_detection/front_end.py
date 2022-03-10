@@ -101,8 +101,10 @@ def spectrogram(
   frame_step = int(hop_seconds * sample_rate)
   tf.assert_greater(frame_length, 0)
   tf.assert_greater(frame_step, 0)
-  stft = tf.signal.stft(
-      waveform, frame_length=frame_length, frame_step=frame_step, pad_end=False)
+  stft = tf.signal.stft(waveform,
+                        frame_length=frame_length,
+                        frame_step=frame_step,
+                        pad_end=False)
   return tf.abs(stft)
 
 
@@ -130,16 +132,17 @@ def _subtract_noise_floor(sgram: tf.Tensor, config: NoiseFloorConfig,
     else:
       smoother_input = tf.expand_dims(sgram, 0)
     smoothed = tf.squeeze(
-        tf.nn.avg_pool2d(
-            tf.expand_dims(smoother_input, -1), [1, smoother_len], 1, 'SAME'),
-        -1)
+        tf.nn.avg_pool2d(tf.expand_dims(smoother_input, -1), [1, smoother_len],
+                         1, 'SAME'), -1)
     if not is_batch:
       smoothed = tf.squeeze(smoothed, 0)
     floor_input = smoothed
   else:
     floor_input = sgram
-  floor = tfp.stats.percentile(
-      floor_input, config.percentile, axis=1, keepdims=True)
+  floor = tfp.stats.percentile(floor_input,
+                               config.percentile,
+                               axis=1,
+                               keepdims=True)
   return sgram - floor
 
 
@@ -173,11 +176,10 @@ class Spectrogram(tf.keras.layers.Layer):
 
   def call(self, waveform, training=False):
     sample_rate = self._config.sample_rate
-    magnitude = spectrogram(
-        waveform,
-        sample_rate=sample_rate,
-        frame_seconds=self._config.frame_seconds,
-        hop_seconds=self._config.hop_seconds)
+    magnitude = spectrogram(waveform,
+                            sample_rate=sample_rate,
+                            frame_seconds=self._config.frame_seconds,
+                            hop_seconds=self._config.hop_seconds)
     num_frequency_bins = magnitude.shape[-1]
     hz_per_bin = sample_rate / 2 / num_frequency_bins
 
