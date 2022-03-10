@@ -56,6 +56,26 @@ class TestFrontEnd(unittest.TestCase):
 
     self.assertEqual(frequency_scaling.num_mel_bins, spectrogram.shape[-1])
 
+  def test_mel_scaling_upper_edge_exception(self):
+    tf.random.set_seed(1413)  # to avoid flakiness
+
+    sample_rate = 2000
+    frequency_scaling = front_end.MelScalingConfig(
+        num_mel_bins=80,
+        lower_edge_hz=20.0,
+        upper_edge_hz=(sample_rate / 2 * 1.1),  # > Nyquist
+    )
+    config = front_end.SpectrogramConfig(
+        sample_rate=sample_rate,
+        frequency_scaling=frequency_scaling,
+    )
+    num_samples = sample_rate * 1
+    noise_waveform = tf.random.normal([num_samples], 0, 1e-3)
+    layer = front_end.Spectrogram(config)
+
+    with self.assertRaises(ValueError):
+      _ = layer(noise_waveform)
+
   def test_spectrogram_layer_with_cropping(self):
     tf.random.set_seed(1413)  # to avoid flakiness
 

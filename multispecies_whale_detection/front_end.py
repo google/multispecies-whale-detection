@@ -144,6 +144,35 @@ def spectrogram(
   return tf.abs(stft)
 
 
+def _scale_to_mel(sgram: tf.Tensor, config: SpectrogramConfig) -> tf.Tensor:
+  """Converts a magnitude spectrogram to a mel frequency power spectrogram.
+
+  Args:
+    sgram: A STFT magnitude spectrogram.
+    config: Configuration that generated the magnitude spectrogram and contains
+      parameters for mel scaling.
+
+  Returns:
+    Mel-scale magnitude spectrogram of shape (sgram.shape[:-1] +
+    [num_mel_bins]).
+  """
+  nyquist_frequency = float(config.sample_rate / 2)
+  scaling_config = config.frequency_scaling
+  lower_edge_hz = scaling_config.lower_edge_hz
+  upper_edge_hz = scaling_config.upper_edge_hz or nyquist_frequency
+  if upper_edge_hz > nyquist_frequency:
+    raise ValueError(f'(upper_edge_hz={upper_edge_hz:.1f}) > '
+                     '(sample_rate={sample_rate:.1f}) / 2')
+  filters = tf.signal.linear_to_mel_weight_matrix(
+      num_mel_bins=scaling_config.num_mel_bins,
+      num_spectrogram_bins=sgram.shape[-1],
+      sample_rate=config.sample_rate,
+      lower_edge_hertz=lower_edge_hz,
+      upper_edge_hertz=upper_edge_hz,
+  )
+  return tf.math.sqrt(tf.matmul(tf.square(sgram), filters))
+
+
 def _subtract_noise_floor(sgram: tf.Tensor, config: NoiseFloorConfig,
                           hz_per_bin: float) -> tf.Tensor:
   """Subtracts an estimated noise floor from a spectrogram.
@@ -212,37 +241,26 @@ class Spectrogram(tf.keras.layers.Layer):
 
   def call(self, waveform, training=False):
     sample_rate = self._config.sample_rate
-    magnitude = spectrogram(waveform,
-                            sample_rate=sample_rate,
-                            frame_seconds=self._config.frame_seconds,
-                            hop_seconds=self._config.hop_seconds)
-    num_frequency_bins = magnitude.shape[-1]
-    hz_per_bin = sample_rate / 2 / num_frequency_bins
+    magnitude = spectrogram(
+        waveform,
+        sample_rate=sample_rate,
+        frame_seconds=self._config.frame_seconds,
+        hop_seconds=self._config.hop_seconds)
+    hz_per_bin = sample_rate / 2 / magnitude.shape[-1]
 
     frequency_scaling = self._config.frequency_scaling
     if not frequency_scaling:
-      db = amplitude_ratio_to_db(magnitude + self._config.log_stabilizer)
+      pass
     elif isinstance(frequency_scaling, MelScalingConfig):
-      mel_scale_power = tf.matmul(
-          tf.square(magnitude),
-          tf.signal.linear_to_mel_weight_matrix(
-              num_mel_bins=frequency_scaling.num_mel_bins,
-              num_spectrogram_bins=num_frequency_bins,
-              sample_rate=sample_rate,
-              lower_edge_hertz=frequency_scaling.lower_edge_hz,
-              upper_edge_hertz=(frequency_scaling.upper_edge_hz or
-                                float(sample_rate / 2)),
-          ),
-      )
-      db = power_ratio_to_db(mel_scale_power +
-                             tf.square(self._config.log_stabilizer))
+      magnitude = _scale_to_mel(magnitude, self._config)
     elif isinstance(frequency_scaling, CropFrequencyConfig):
-      cropped = magnitude[...,
-                          int(frequency_scaling.lower_edge_hz / hz_per_bin):]
-      db = amplitude_ratio_to_db(cropped + self._config.log_stabilizer)
+      num_cropped_bins = int(frequency_scaling.lower_edge_hz / hz_per_bin)
+      magnitude = magnitude[..., num_cropped_bins:]
     else:
       raise TypeError(
           f'unknown frequency scaling type {type(frequency_scaling)}')
+
+    db = amplitude_ratio_to_db(magnitude + self._config.log_stabilizer)
 
     normalization = self._config.normalization
     if not normalization:
