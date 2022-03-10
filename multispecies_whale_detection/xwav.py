@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Support for the XWAV file format.
 
 Many underwater acoustic monitoring datasets are collected on the HARP
@@ -177,15 +176,14 @@ class Subchunk:
       raise CorruptHeadersError from e
 
     try:
-      time = datetime.datetime(
-          cls.ZERO_YEAR + year,
-          month,
-          day,
-          hour,
-          minute,
-          second,
-          ticks * cls.MICROSECONDS_PER_TICK,
-          tzinfo=datetime.timezone.utc)
+      time = datetime.datetime(cls.ZERO_YEAR + year,
+                               month,
+                               day,
+                               hour,
+                               minute,
+                               second,
+                               ticks * cls.MICROSECONDS_PER_TICK,
+                               tzinfo=datetime.timezone.utc)
     except ValueError as e:
       raise CorruptHeadersError from e
 
@@ -627,8 +625,9 @@ class Reader:
     subchunk_duration_frames = subchunk.byte_length // block_align
 
     self._soundfile.seek(frame_offset, whence=soundfile.SEEK_SET)
-    samples = self._soundfile.read(
-        frames=subchunk_duration_frames, dtype='int16', always_2d=True)
+    samples = self._soundfile.read(frames=subchunk_duration_frames,
+                                   dtype='int16',
+                                   always_2d=True)
 
     frames, channels = samples.shape
     del channels

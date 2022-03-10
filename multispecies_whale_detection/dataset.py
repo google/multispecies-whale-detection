@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """tf.data readers and support for audio TFRecord datasets.
 
 In the :py:class:`Features` enumeration, this module formalizes the specific
@@ -60,9 +59,8 @@ def parse_fn(
   features = tf.io.parse_single_example(
       serialized_example, {f.value.name: f.value.spec for f in Features})
   audio_key: str = Features.AUDIO.value.name
-  features[audio_key] = tf.cast(
-      tf.io.decode_raw(features[audio_key], tf.int16), tf.float32) / np.iinfo(
-          np.int16).max
+  features[audio_key] = tf.cast(tf.io.decode_raw(features[audio_key], tf.int16),
+                                tf.float32) / np.iinfo(np.int16).max
   return features
 
 

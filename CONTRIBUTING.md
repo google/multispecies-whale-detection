@@ -27,3 +27,11 @@ We use pull requests as a mechanism for requesting review and approving commits.
 
 For changes expected to involve substantial effort, contributors are encouraged
 to start discussion using an issue before investing substantial coding effort.
+
+## Code Formatting
+
+Please auto format before committing using yapf with the .style.yapf at the root
+of this project. (yapf automatically looks for this config file in parent
+directories.) This provides a definite (though arbitrary) convention to minimize
+the impact of whitespace-only differences on merge effort and to avoid needing
+to debate formatting in code reviews.
