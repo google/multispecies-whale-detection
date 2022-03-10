@@ -145,7 +145,7 @@ def spectrogram(
 
 
 def _scale_to_mel(sgram: tf.Tensor, config: SpectrogramConfig) -> tf.Tensor:
-  """Converts a magnitude spectrogram to a mel frequency power spectrogram.
+  """Converts a magnitude spectrogram to a mel frequency magnitude spectrogram.
 
   Args:
     sgram: A STFT magnitude spectrogram.
