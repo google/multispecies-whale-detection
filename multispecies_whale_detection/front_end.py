@@ -14,7 +14,7 @@
 """Ops for signal processing that prepares neural network input."""
 import dataclasses
 import enum
-from typing import Optional
+from typing import Optional, Union
 
 import tensorflow as tf
 import tensorflow_probability as tfp
@@ -24,8 +24,46 @@ def amplitude_ratio_to_db(x):
   return 20.0 * tf.math.log(x / 10.0)
 
 
+def power_ratio_to_db(x):
+  return 10.0 * tf.math.log(x / 10.0)
+
+
 def db_to_amplitude_ratio(x):
   return tf.math.pow(10.0, x / 20.0)
+
+
+@dataclasses.dataclass(frozen=True)
+class CropFrequencyConfig:
+  """Frequency "scaling" that ignores a range.
+
+  (The bins that are keps are one-to-one with inputs, not actually scaled.)
+  """
+
+  lower_edge_hz: float = 8.0
+  """Frequency below which the spectrogram should be truncated.
+
+  This is intended as a way of ignoring low-frequency noise.
+  """
+
+
+@dataclasses.dataclass(frozen=True)
+class MelScalingConfig:
+  """Parameters for mel frequency scaling.
+
+  https://en.wikipedia.org/wiki/Mel_scale
+  """
+
+  num_mel_bins: int = 128
+  """Number of frequency bins in the scaled spectrogram."""
+
+  lower_edge_hz: float = 50.0
+  """Lower bound of frequency bin centers."""
+
+  upper_edge_hz: Optional[float] = None
+  """Upper bound of frequency bin centers.
+
+  If unset, this will default to (sample_rate / 2).
+  """
 
 
 @dataclasses.dataclass(frozen=True)
@@ -65,11 +103,9 @@ class SpectrogramConfig:
   """Interval between successive STFT frames."""
   log_stabilizer: float = 1e-6
   """Used in log((STFT magnitude) + stabilizer) to avoid division by zero."""
-  lower_bound_hz: float = 8.0
-  """Frequency below which the spectrogram should be truncated.
 
-  This is intended as a way of ignoring low-frequency noise.
-  """
+  frequency_scaling: Union[None, MelScalingConfig, CropFrequencyConfig] = None
+  """Type of and parameters for scaling the fequency axis."""
 
   normalization: Optional[NoiseFloorConfig] = None
   """Type of and parameters for the normalization strategy."""
@@ -106,6 +142,35 @@ def spectrogram(
                         frame_step=frame_step,
                         pad_end=False)
   return tf.abs(stft)
+
+
+def _scale_to_mel(sgram: tf.Tensor, config: SpectrogramConfig) -> tf.Tensor:
+  """Converts a magnitude spectrogram to a mel frequency magnitude spectrogram.
+
+  Args:
+    sgram: A STFT magnitude spectrogram.
+    config: Configuration that generated the magnitude spectrogram and contains
+      parameters for mel scaling.
+
+  Returns:
+    Mel-scale magnitude spectrogram of shape (sgram.shape[:-1] +
+    [num_mel_bins]).
+  """
+  nyquist_frequency = float(config.sample_rate / 2)
+  scaling_config = config.frequency_scaling
+  lower_edge_hz = scaling_config.lower_edge_hz
+  upper_edge_hz = scaling_config.upper_edge_hz or nyquist_frequency
+  if upper_edge_hz > nyquist_frequency:
+    raise ValueError(f'(upper_edge_hz={upper_edge_hz:.1f}) > '
+                     '(sample_rate={sample_rate:.1f}) / 2')
+  filters = tf.signal.linear_to_mel_weight_matrix(
+      num_mel_bins=scaling_config.num_mel_bins,
+      num_spectrogram_bins=sgram.shape[-1],
+      sample_rate=config.sample_rate,
+      lower_edge_hertz=lower_edge_hz,
+      upper_edge_hertz=upper_edge_hz,
+  )
+  return tf.math.sqrt(tf.matmul(tf.square(sgram), filters))
 
 
 def _subtract_noise_floor(sgram: tf.Tensor, config: NoiseFloorConfig,
@@ -176,12 +241,24 @@ class Spectrogram(tf.keras.layers.Layer):
 
   def call(self, waveform, training=False):
     sample_rate = self._config.sample_rate
-    magnitude = spectrogram(waveform,
-                            sample_rate=sample_rate,
-                            frame_seconds=self._config.frame_seconds,
-                            hop_seconds=self._config.hop_seconds)
-    num_frequency_bins = magnitude.shape[-1]
-    hz_per_bin = sample_rate / 2 / num_frequency_bins
+    magnitude = spectrogram(
+        waveform,
+        sample_rate=sample_rate,
+        frame_seconds=self._config.frame_seconds,
+        hop_seconds=self._config.hop_seconds)
+    hz_per_bin = sample_rate / 2 / magnitude.shape[-1]
+
+    frequency_scaling = self._config.frequency_scaling
+    if not frequency_scaling:
+      pass
+    elif isinstance(frequency_scaling, MelScalingConfig):
+      magnitude = _scale_to_mel(magnitude, self._config)
+    elif isinstance(frequency_scaling, CropFrequencyConfig):
+      num_cropped_bins = int(frequency_scaling.lower_edge_hz / hz_per_bin)
+      magnitude = magnitude[..., num_cropped_bins:]
+    else:
+      raise TypeError(
+          f'unknown frequency scaling type {type(frequency_scaling)}')
 
     db = amplitude_ratio_to_db(magnitude + self._config.log_stabilizer)
 
@@ -193,13 +270,14 @@ class Spectrogram(tf.keras.layers.Layer):
     else:
       raise TypeError(f'unknown normalization type {type(normalization)}')
 
-    sgram = sgram[..., int(self._config.lower_bound_hz / hz_per_bin):]
-
     return sgram
 
   def get_config(self):
     """Implements Layer.get_config."""
     config = dataclasses.asdict(self._config)
+    frequency_scaling = self._config.frequency_scaling
+    if frequency_scaling:
+      config.update(frequency_scaling_type=frequency_scaling.__class__.__name__)
     normalization = self._config.normalization
     if normalization:
       config.update(normalization_type=normalization.__class__.__name__)
@@ -208,6 +286,13 @@ class Spectrogram(tf.keras.layers.Layer):
   @classmethod
   def from_config(cls, config):
     """Implements Layer.from_config."""
+    frequency_scaling_config = config.pop('frequency_scaling', None)
+    if frequency_scaling_config:
+      frequency_scaling_class = globals()[config.pop('frequency_scaling_type')]
+      frequency_scaling = frequency_scaling_class(**frequency_scaling_config)
+      del frequency_scaling_class
+    else:
+      frequency_scaling = None
     normalization_config = config.pop('normalization', None)
     if normalization_config:
       normalization_class = globals()[config.pop('normalization_type')]
@@ -215,4 +300,8 @@ class Spectrogram(tf.keras.layers.Layer):
       del normalization_class
     else:
       normalization = None
-    return cls(SpectrogramConfig(normalization=normalization, **config))
+    return cls(
+        SpectrogramConfig(
+            frequency_scaling=frequency_scaling,
+            normalization=normalization,
+            **config))
