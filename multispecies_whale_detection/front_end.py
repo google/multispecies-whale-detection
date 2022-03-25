@@ -32,6 +32,10 @@ def db_to_amplitude_ratio(x):
   return tf.math.pow(10.0, x / 20.0)
 
 
+def db_to_power_ratio(x):
+  return tf.math.pow(10.0, x / 10.0)
+
+
 @dataclasses.dataclass(frozen=True)
 class CropFrequencyConfig:
   """Frequency "scaling" that ignores a range.
@@ -234,10 +238,28 @@ class Spectrogram(tf.keras.layers.Layer):
         spectrogram to different time scales, distances to source, level
         variability across endpoints, etc.
     """
-    super(Spectrogram, self).__init__()
+    super().__init__()
     if not config:
       config = SpectrogramConfig()
     self._config = config
+
+    # Validate during initialization that correct configuration was passed.
+    frequency_scaling = self._config.frequency_scaling
+    if not frequency_scaling:
+      pass
+    elif isinstance(frequency_scaling, (MelScalingConfig, CropFrequencyConfig)):
+      pass
+    else:
+      raise TypeError(
+          f'unknown frequency scaling type {type(frequency_scaling)}')
+
+    normalization = self._config.normalization
+    if not normalization:
+      pass
+    elif isinstance(normalization, NoiseFloorConfig):
+      pass
+    else:
+      raise TypeError(f'unknown normalization type {type(normalization)}')
 
   def call(self, waveform, training=False):
     sample_rate = self._config.sample_rate
