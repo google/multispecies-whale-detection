@@ -23,6 +23,31 @@ import tensorflow_probability as tfp
 
 class TestFrontEnd(unittest.TestCase):
 
+  def test_amplitude_db_scaling(self):
+    ratios = tf.constant([0.1, 0.5, 1.0, 2.0, 5.0], tf.float32)
+    db = front_end.amplitude_ratio_to_db(ratios)
+    db_ten_x = front_end.amplitude_ratio_to_db(10.0 * ratios)
+    self.assertTrue(tf.reduce_max(tf.math.abs((db + 20.0) - db_ten_x)) < 1e-6)
+
+  def test_power_db_scaling(self):
+    ratios = tf.constant([0.1, 0.5, 1.0, 2.0, 5.0], tf.float32)
+    db = front_end.power_ratio_to_db(ratios)
+    db_ten_x = front_end.power_ratio_to_db(10.0 * ratios)
+    self.assertTrue(tf.reduce_max(tf.math.abs((db + 10.0) - db_ten_x)) < 1e-6)
+
+  def test_amplitude_to_db_round_trip(self):
+    ratios = tf.constant([0.1, 0.5, 1.0, 2.0, 5.0], tf.float32)
+    db = front_end.amplitude_ratio_to_db(ratios)
+    ratios_from_db = front_end.db_to_amplitude_ratio(db)
+    self.assertTrue(tf.reduce_max(tf.math.abs(ratios - ratios_from_db)) < 1e-6)
+
+  def test_power_and_amplitude_round_trip(self):
+    ratios = tf.constant([0.1, 0.5, 1.0, 2.0, 5.0], tf.float32)
+    power_ratios = tf.math.square(ratios)
+    db = front_end.power_ratio_to_db(power_ratios)
+    ratios_from_db = front_end.db_to_amplitude_ratio(db)
+    self.assertTrue(tf.reduce_max(tf.math.abs(ratios - ratios_from_db)) < 1e-6)
+
   def test_spectrogram_layer(self):
     tf.random.set_seed(3141)  # to avoid flakiness
 
@@ -109,14 +134,15 @@ class TestFrontEnd(unittest.TestCase):
         normalization=normalization,
     )
     num_samples = sample_rate * 1
-    noise_waveform = tf.random.normal([num_samples], 0, 1e-3)
+    noise_waveform = tf.random.normal([num_samples], 0,
+                                      front_end.db_to_amplitude_ratio(-30.0))
     layer = front_end.Spectrogram(config)
 
     spectrogram = layer(noise_waveform)
 
     # The values are in a sensible dB range.
-    self.assertTrue(tf.math.reduce_all(spectrogram >= -120.0).numpy())
-    self.assertTrue(tf.math.reduce_all(spectrogram <= 120.0).numpy())
+    self.assertTrue(tf.math.reduce_all(spectrogram >= -40.0).numpy())
+    self.assertTrue(tf.math.reduce_all(spectrogram <= 30.0).numpy())
 
     # Running without normalization and shifting the noise floor percentile
     # across all channels should bring levels roughly into the same range as the
@@ -126,7 +152,7 @@ class TestFrontEnd(unittest.TestCase):
             noise_waveform)
     floor = tfp.stats.percentile(unnormalized_spectrogram,
                                  normalization.percentile)
-    margin_db = 12.0
+    margin_db = 6.0
     self.assertLess(
         tf.math.reduce_max(
             tf.abs((unnormalized_spectrogram - floor) - spectrogram)),
@@ -134,7 +160,7 @@ class TestFrontEnd(unittest.TestCase):
     # Note that the normalization has made a large adjustment in overall level.
     self.assertGreater(
         tf.math.reduce_max(tf.abs(unnormalized_spectrogram - spectrogram)),
-        margin_db + 120.0)
+        24.0)
 
   def test_spectrogram_config_serialization(self):
     default_config = front_end.SpectrogramConfig()
