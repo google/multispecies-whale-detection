@@ -175,13 +175,13 @@ class TestFrontEnd(unittest.TestCase):
 class TestSpectrogram(unittest.TestCase):
 
   def test_bad_config(self):
-    with self.assertRaises(TypeError):
+    with self.assertRaises(AssertionError):
       # Wrong: NoiseFloorConfig as FrequencyScalingConfig
       config = front_end.SpectrogramConfig(frequency_scaling=front_end.NoiseFloorConfig())
       front_end.Spectrogram(config)
-    with self.assertRaises(TypeError):
+    with self.assertRaises(AssertionError):
       # Wrong: FrequencyScalingConfig as NoiseFloorConfig
-      config = front_end.SpectrogramConfig(noise_floor_config=front_end.MelScalingConfig())
+      config = front_end.SpectrogramConfig(normalization=front_end.MelScalingConfig())
       front_end.Spectrogram(config)
 
     # Make sure default config is correct.
