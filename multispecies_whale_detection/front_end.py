@@ -245,18 +245,15 @@ class Spectrogram(tf.keras.layers.Layer):
 
     # Validate during initialization that correct configuration was passed.
     frequency_scaling = self._config.frequency_scaling
-    if not frequency_scaling:
-      pass
-    elif isinstance(frequency_scaling, (MelScalingConfig, CropFrequencyConfig)):
+    if isinstance(frequency_scaling, (type(None), MelScalingConfig,
+        CropFrequencyConfig)):
       pass
     else:
       raise TypeError(
           f'unknown frequency scaling type {type(frequency_scaling)}')
 
     normalization = self._config.normalization
-    if not normalization:
-      pass
-    elif isinstance(normalization, NoiseFloorConfig):
+    if isinstance(normalization, (type(None), NoiseFloorConfig)):
       pass
     else:
       raise TypeError(f'unknown normalization type {type(normalization)}')
