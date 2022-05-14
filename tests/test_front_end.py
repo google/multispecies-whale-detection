@@ -198,5 +198,21 @@ class TestFrontEnd(unittest.TestCase):
         tf.math.reduce_max(non_default_output - reloaded_output), tolerance)
 
 
+class TestSpectrogram(unittest.TestCase):
+
+  def test_bad_config(self):
+    with self.assertRaises(AssertionError):
+      # Wrong: NoiseFloorConfig as FrequencyScalingConfig
+      config = front_end.SpectrogramConfig(frequency_scaling=front_end.NoiseFloorConfig())
+      front_end.Spectrogram(config)
+    with self.assertRaises(AssertionError):
+      # Wrong: FrequencyScalingConfig as NoiseFloorConfig
+      config = front_end.SpectrogramConfig(normalization=front_end.MelScalingConfig())
+      front_end.Spectrogram(config)
+
+    # Make sure default config is correct.
+    front_end.Spectrogram(front_end.SpectrogramConfig())
+
+
 if __name__ == '__main__':
   unittest.main()
